@@ -1,0 +1,16 @@
+Source: cargo-deny
+Section: devel
+Priority: optional
+Maintainer: Pexip AS <packaging@pexip.com>
+Standards-Version: 4.3.0
+Build-Depends: debhelper-compat (= 13), cargo
+Vcs-Browser: https://github.com/pexip/os-cargo-deny/
+Vcs-Git: https://github.com/pexip/os-cargo-deny.git
+XS-Upstream-Git: https://github.com/EmbarkStudios/cargo-deny
+
+Package: cargo-deny
+Architecture: any
+Depends: ${misc:Depends},
+ ${shlib:Depends},
+Description: Cargo plugin to limit dependencies
+ Cargo plugin which allows you to limit your dependencies.
