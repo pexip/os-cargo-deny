@@ -80,3 +80,9 @@ rustflags = [
 
 [target.'cfg(target_env = "musl")']
 rustflags = ["-C", "target-feature=+crt-static"]
+
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"
