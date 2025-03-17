@@ -1,6 +1,6 @@
 use crate::common::ValidConfig;
 use anyhow::{Context as _, Error};
-use cargo_deny::{diag::Files, licenses, Kid, PathBuf};
+use cargo_deny::{Kid, PathBuf, diag::Files, licenses};
 use nu_ansi_term::Color;
 use serde::Serialize;
 
@@ -78,7 +78,7 @@ pub fn cmd(
     #[derive(Ord, PartialOrd, PartialEq, Eq)]
     struct SerKid<'k>(Cow<'k, Kid>);
 
-    impl<'k> serde::Serialize for SerKid<'k> {
+    impl serde::Serialize for SerKid<'_> {
         fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
         where
             S: serde::Serializer,
@@ -92,7 +92,7 @@ pub fn cmd(
         }
     }
 
-    impl<'k> SerKid<'k> {
+    impl SerKid<'_> {
         fn parts(&self) -> (&str, &str) {
             (self.0.name(), self.0.version())
         }

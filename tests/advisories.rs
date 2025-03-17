@@ -1,8 +1,8 @@
 use cargo_deny::{
+    Krates,
     advisories::{self, cfg},
     field_eq, func_name,
     test_utils::{self as tu},
-    Krates,
 };
 
 struct TestCtx {
@@ -65,10 +65,10 @@ fn find_by_code<'a>(diags: &'a [serde_json::Value], code: &str) -> Option<&'a se
 fn detects_vulnerabilities() {
     let TestCtx { dbs, krates } = load();
 
-    let cfg = tu::Config::new("vulnerability = 'deny'");
+    let cfg = tu::Config::new("");
 
     let diags =
-        tu::gather_diagnostics::<cfg::Config, _, _>(&krates, func_name!(), cfg, |ctx, _, tx, _| {
+        tu::gather_diagnostics::<cfg::Config, _, _>(&krates, func_name!(), cfg, |ctx, tx| {
             advisories::check(
                 ctx,
                 &dbs,
@@ -88,21 +88,81 @@ fn detects_vulnerabilities() {
 fn detects_unmaintained() {
     let TestCtx { dbs, krates } = load();
 
-    let cfg = tu::Config::new("unmaintained = 'warn'");
+    fn unmaintained_advisories(v: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+        v.into_iter()
+            .filter(|diag| {
+                diag.pointer("/fields/code").and_then(|code| code.as_str()) == Some("unmaintained")
+            })
+            .collect()
+    }
 
-    let diags =
-        tu::gather_diagnostics::<cfg::Config, _, _>(&krates, func_name!(), cfg, |ctx, _, tx, _| {
-            advisories::check(
-                ctx,
-                &dbs,
-                Option::<advisories::NoneReporter>::None,
-                None,
-                tx,
-            );
-        });
+    {
+        let cfg = tu::Config::new("");
 
-    let unmaintained_diag = find_by_code(&diags, "RUSTSEC-2016-0004").unwrap();
-    insta::assert_json_snapshot!(unmaintained_diag);
+        let diags =
+            tu::gather_diagnostics::<cfg::Config, _, _>(&krates, func_name!(), cfg, |ctx, tx| {
+                advisories::check(
+                    ctx,
+                    &dbs,
+                    Option::<advisories::NoneReporter>::None,
+                    None,
+                    tx,
+                );
+            });
+
+        insta::assert_json_snapshot!(unmaintained_advisories(diags));
+    }
+
+    {
+        let cfg = tu::Config::new("unmaintained = 'workspace'");
+
+        let diags =
+            tu::gather_diagnostics::<cfg::Config, _, _>(&krates, func_name!(), cfg, |ctx, tx| {
+                advisories::check(
+                    ctx,
+                    &dbs,
+                    Option::<advisories::NoneReporter>::None,
+                    None,
+                    tx,
+                );
+            });
+
+        insta::assert_json_snapshot!(unmaintained_advisories(diags));
+    }
+
+    {
+        let cfg = tu::Config::new("unmaintained = 'transitive'");
+
+        let diags =
+            tu::gather_diagnostics::<cfg::Config, _, _>(&krates, func_name!(), cfg, |ctx, tx| {
+                advisories::check(
+                    ctx,
+                    &dbs,
+                    Option::<advisories::NoneReporter>::None,
+                    None,
+                    tx,
+                );
+            });
+
+        insta::assert_json_snapshot!(unmaintained_advisories(diags));
+    }
+
+    {
+        let cfg = tu::Config::new("unmaintained = 'none'");
+
+        let diags =
+            tu::gather_diagnostics::<cfg::Config, _, _>(&krates, func_name!(), cfg, |ctx, tx| {
+                advisories::check(
+                    ctx,
+                    &dbs,
+                    Option::<advisories::NoneReporter>::None,
+                    None,
+                    tx,
+                );
+            });
+
+        insta::assert_json_snapshot!(unmaintained_advisories(diags));
+    }
 }
 
 /// Validates we emit diagnostics when an unsound advisory is detected
@@ -110,10 +170,10 @@ fn detects_unmaintained() {
 fn detects_unsound() {
     let TestCtx { dbs, krates } = load();
 
-    let cfg = tu::Config::new("unsound = 'warn'");
+    let cfg = tu::Config::new("");
 
     let diags =
-        tu::gather_diagnostics::<cfg::Config, _, _>(&krates, func_name!(), cfg, |ctx, _, tx, _| {
+        tu::gather_diagnostics::<cfg::Config, _, _>(&krates, func_name!(), cfg, |ctx, tx| {
             advisories::check(
                 ctx,
                 &dbs,
@@ -135,7 +195,6 @@ fn downgrades_lint_levels() {
 
     let cfg = tu::Config::new(
         r#"
-unmaintained = "warn"
 ignore = [
     "RUSTSEC-2016-0004",
     { id = "RUSTSEC-2019-0001", reason = "this is a test" },
@@ -144,7 +203,7 @@ ignore = [
     );
 
     let diags =
-        tu::gather_diagnostics::<cfg::Config, _, _>(&krates, func_name!(), cfg, |ctx, _, tx, _| {
+        tu::gather_diagnostics::<cfg::Config, _, _>(&krates, func_name!(), cfg, |ctx, tx| {
             advisories::check(
                 ctx,
                 &dbs,
@@ -166,7 +225,7 @@ ignore = [
         .filter(|v| {
             v.pointer("/fields/code")
                 .and_then(|s| s.as_str())
-                .map_or(false, |s| s == "advisory-ignored")
+                .is_some_and(|s| s == "advisory-ignored")
         })
         .collect();
 
@@ -206,19 +265,15 @@ fn detects_yanked() {
     let dbs = advisories::DbSet { dbs: Vec::new() };
 
     {
-        let cfg =
-            tu::Config::new("yanked = 'deny'\nunmaintained = 'allow'\nvulnerability = 'allow'");
+        let cfg = tu::Config::new("yanked = 'deny'");
 
         let indices = advisories::Indices {
             indices: Vec::new(),
             cache: indices.cache.clone(),
         };
 
-        let diags = tu::gather_diagnostics::<cfg::Config, _, _>(
-            &krates,
-            func_name!(),
-            cfg,
-            |ctx, _, tx, _| {
+        let diags =
+            tu::gather_diagnostics::<cfg::Config, _, _>(&krates, func_name!(), cfg, |ctx, tx| {
                 advisories::check(
                     ctx,
                     &dbs,
@@ -226,15 +281,14 @@ fn detects_yanked() {
                     Some(indices),
                     tx,
                 );
-            },
-        );
+            });
 
         let diags: Vec<_> = diags
             .into_iter()
             .filter(|v| {
                 v.pointer("/fields/message")
                     .and_then(|v| v.as_str())
-                    .map_or(false, |v| v.starts_with("detected yanked crate"))
+                    .is_some_and(|v| v.starts_with("detected yanked crate"))
             })
             .collect();
 
@@ -251,16 +305,11 @@ ignore = [
     # This crate is not in the graph, so we should get a warning about it
     "boop",
 ]
-unmaintained = "allow"
-vulnerability = "allow"
 "#,
         );
 
-        let diags = tu::gather_diagnostics::<cfg::Config, _, _>(
-            &krates,
-            func_name!(),
-            cfg,
-            |ctx, _, tx, _| {
+        let diags =
+            tu::gather_diagnostics::<cfg::Config, _, _>(&krates, func_name!(), cfg, |ctx, tx| {
                 advisories::check(
                     ctx,
                     &dbs,
@@ -268,15 +317,14 @@ vulnerability = "allow"
                     Some(indices),
                     tx,
                 );
-            },
-        );
+            });
 
         let diags: Vec<_> = diags
             .into_iter()
             .filter(|v| {
                 v.pointer("/fields/message")
                     .and_then(|v| v.as_str())
-                    .map_or(false, |v| {
+                    .is_some_and(|v| {
                         v.starts_with("detected yanked crate") || v.starts_with("yanked crate")
                     })
             })
@@ -292,7 +340,7 @@ vulnerability = "allow"
 fn warns_on_index_failures() {
     let TestCtx { dbs, krates } = load();
 
-    let cfg = tu::Config::new("yanked = 'deny'\nunmaintained = 'allow'\nvulnerability = 'allow'");
+    let cfg = tu::Config::new("yanked = 'deny'");
 
     let source = cargo_deny::Source::crates_io(false);
 
@@ -316,7 +364,7 @@ fn warns_on_index_failures() {
     };
 
     let diags =
-        tu::gather_diagnostics::<cfg::Config, _, _>(&krates, func_name!(), cfg, |ctx, _, tx, _| {
+        tu::gather_diagnostics::<cfg::Config, _, _>(&krates, func_name!(), cfg, |ctx, tx| {
             advisories::check(
                 ctx,
                 &dbs,
@@ -342,12 +390,10 @@ fn warns_on_index_failures() {
 fn warns_on_ignored_and_withdrawn() {
     let TestCtx { dbs, krates } = load();
 
-    let cfg = tu::Config::new(
-        "yanked = 'deny'\nunmaintained = 'deny'\nvulnerability = 'deny'\nignore = ['RUSTSEC-2020-0053']",
-    );
+    let cfg = tu::Config::new("yanked = 'deny'\nignore = ['RUSTSEC-2020-0053']");
 
     let diags =
-        tu::gather_diagnostics::<cfg::Config, _, _>(&krates, func_name!(), cfg, |ctx, _, tx, _| {
+        tu::gather_diagnostics::<cfg::Config, _, _>(&krates, func_name!(), cfg, |ctx, tx| {
             advisories::check(
                 ctx,
                 &dbs,
@@ -357,10 +403,12 @@ fn warns_on_ignored_and_withdrawn() {
             );
         });
 
-    insta::assert_json_snapshot!(diags
-        .iter()
-        .find(|diag| field_eq!(diag, "/fields/code", "advisory-not-detected"))
-        .unwrap());
+    insta::assert_json_snapshot!(
+        diags
+            .iter()
+            .find(|diag| field_eq!(diag, "/fields/code", "advisory-not-detected"))
+            .unwrap()
+    );
 }
 
 #[inline]
@@ -376,22 +424,24 @@ fn to_path(td: &tempfile::TempDir) -> Option<&cargo_deny::Path> {
 /// Validates that stale advisory databases result in an error
 #[test]
 fn fails_on_stale_advisory_database() {
-    assert!(advisories::DbSet::load(
-        "tests/advisory-db".into(),
-        vec![],
-        advisories::Fetch::Disallow(time::Duration::seconds(0)),
-    )
-    .unwrap_err()
-    .to_string()
-    .contains("repository is stale"));
+    assert!(
+        advisories::DbSet::load(
+            "tests/advisory-db".into(),
+            vec![],
+            advisories::Fetch::Disallow(time::Duration::seconds(0)),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("repository is stale")
+    );
 }
 
 use advisories::Fetch;
 
 const TEST_DB_URL: &str = "https://github.com/EmbarkStudios/test-advisory-db";
-const TEST_DB_PATH: &str = "tests/advisory-db/github.com-c373669cccc50ac0";
-const GIT_PATH: &str = "github.com-c373669cccc50ac0/.git";
-const GIT_SUB_PATH: &str = ".git/modules/tests/advisory-db/github.com-c373669cccc50ac0";
+const TEST_DB_PATH: &str = "tests/advisory-db/test-advisory-db-c27873b782cceedc";
+const GIT_PATH: &str = "test-advisory-db-c27873b782cceedc/.git";
+const GIT_SUB_PATH: &str = ".git/modules/tests/advisory-db/test-advisory-db-c27873b782cceedc";
 
 /// Expected HEAD without fetch
 const EXPECTED_ONE: &str = "1f44d565d81692a44b8c7af8a80f587e19757f8c";
@@ -520,6 +570,7 @@ fn validate_fetch(fetch: Fetch) {
 /// Validates we can fetch advisory db updates with gix
 #[test]
 fn fetches_with_gix() {
+    #[allow(clippy::disallowed_macros)]
     if std::env::var_os("CI").is_some() && cfg!(target_os = "macos") {
         println!("consistently times out, so tired");
         return;
@@ -531,6 +582,7 @@ fn fetches_with_gix() {
 /// Validates we can fetch advisory db updates with git
 #[test]
 fn fetches_with_git() {
+    #[allow(clippy::disallowed_macros)]
     if std::env::var_os("CI").is_some() && cfg!(target_os = "macos") {
         println!("consistently times out, so tired");
         return;
@@ -593,7 +645,7 @@ fn crates_io_source_replacement() {
         let index_krates: Vec<_> = krates
             .krates()
             .filter_map(|k| {
-                if k.source.as_ref().map_or(true, |s| !s.is_crates_io()) {
+                if k.source.as_ref().is_none_or(|s| !s.is_crates_io()) {
                     return None;
                 }
                 Some(IndexPkg {
@@ -687,12 +739,12 @@ fn crates_io_source_replacement() {
 
     let indices = advisories::Indices::load(&krates, cargo_home.clone());
 
-    let cfg = tu::Config::new("yanked = 'deny'\nunmaintained = 'allow'\nvulnerability = 'allow'");
+    let cfg = tu::Config::new("yanked = 'deny'");
 
     let dbs = advisories::DbSet { dbs: Vec::new() };
 
     let diags =
-        tu::gather_diagnostics::<cfg::Config, _, _>(&krates, func_name!(), cfg, |ctx, _, tx, _| {
+        tu::gather_diagnostics::<cfg::Config, _, _>(&krates, func_name!(), cfg, |ctx, tx| {
             advisories::check(
                 ctx,
                 &dbs,
@@ -707,7 +759,7 @@ fn crates_io_source_replacement() {
         .filter(|v| {
             v.pointer("/fields/message")
                 .and_then(|v| v.as_str())
-                .map_or(false, |v| v.starts_with("detected yanked crate"))
+                .is_some_and(|v| v.starts_with("detected yanked crate"))
         })
         .collect();
 
@@ -799,10 +851,10 @@ fn crates_io_source_replacement() {
 
     let indices = advisories::Indices::load(&krates, cargo_home.clone());
 
-    let cfg = tu::Config::new("yanked = 'deny'\nunmaintained = 'allow'\nvulnerability = 'allow'");
+    let cfg = tu::Config::new("yanked = 'deny'");
 
     let diags =
-        tu::gather_diagnostics::<cfg::Config, _, _>(&krates, func_name!(), cfg, |ctx, _, tx, _| {
+        tu::gather_diagnostics::<cfg::Config, _, _>(&krates, func_name!(), cfg, |ctx, tx| {
             advisories::check(
                 ctx,
                 &dbs,

@@ -1,7 +1,7 @@
 use super::cfg::IgnoreId;
 use crate::{
-    diag::{Check, Diagnostic, FileId, Label, Pack, Severity},
     LintLevel,
+    diag::{Check, Diagnostic, FileId, Label, Pack, Severity},
 };
 use rustsec::advisory::{Informational, Metadata, Versions};
 
@@ -66,11 +66,10 @@ fn get_notes_from_advisory(advisory: &Metadata) -> Vec<String> {
     n
 }
 
-impl<'a> crate::CheckCtx<'a, super::cfg::ValidConfig> {
+impl crate::CheckCtx<'_, super::cfg::ValidConfig> {
     pub(crate) fn diag_for_advisory<F>(
         &self,
         krate: &crate::Krate,
-        krate_index: krates::NodeId,
         advisory: &Metadata,
         versions: Option<&Versions>,
         mut on_ignore: F,
@@ -124,24 +123,6 @@ impl<'a> crate::CheckCtx<'a, super::cfg::ValidConfig> {
                 );
 
                 LintLevel::Allow
-            } else if let Some(deprecated) = &self.cfg.deprecated {
-                'll: {
-                    if let (Some(st), Some(sev)) = (
-                        deprecated.severity_threshold,
-                        advisory.cvss.as_ref().map(|c| c.severity()),
-                    ) {
-                        if sev < st {
-                            break 'll LintLevel::Allow;
-                        }
-                    }
-
-                    match adv_ty {
-                        AdvisoryType::Vulnerability => deprecated.vulnerability,
-                        AdvisoryType::Unmaintained => deprecated.unmaintained,
-                        AdvisoryType::Unsound => deprecated.unsound,
-                        AdvisoryType::Notice => deprecated.notice,
-                    }
-                }
             } else {
                 LintLevel::Deny
             };
@@ -179,9 +160,13 @@ impl<'a> crate::CheckCtx<'a, super::cfg::ValidConfig> {
         let diag = pack.push(
             Diagnostic::new(severity)
                 .with_message(advisory.title.clone())
-                .with_labels(vec![self
-                    .krate_spans
-                    .label_for_index(krate_index.index(), message)])
+                .with_labels(vec![
+                    Label::primary(
+                        self.krate_spans.lock_id,
+                        self.krate_spans.lock_span(&krate.id).total,
+                    )
+                    .with_message(message),
+                ])
                 .with_code(code)
                 .with_notes(notes),
         );
@@ -193,11 +178,7 @@ impl<'a> crate::CheckCtx<'a, super::cfg::ValidConfig> {
         pack
     }
 
-    pub(crate) fn diag_for_yanked(
-        &self,
-        krate: &crate::Krate,
-        krate_index: krates::NodeId,
-    ) -> Pack {
+    pub(crate) fn diag_for_yanked(&self, krate: &crate::Krate) -> Pack {
         let mut pack = Pack::with_kid(Check::Advisories, krate.id.clone());
         pack.push(
             Diagnostic::new(self.cfg.yanked.value.into())
@@ -206,9 +187,13 @@ impl<'a> crate::CheckCtx<'a, super::cfg::ValidConfig> {
                     krate.name
                 ))
                 .with_code(Code::Yanked)
-                .with_labels(vec![self
-                    .krate_spans
-                    .label_for_index(krate_index.index(), "yanked version")]),
+                .with_labels(vec![
+                    Label::primary(
+                        self.krate_spans.lock_id,
+                        self.krate_spans.lock_span(&krate.id).total,
+                    )
+                    .with_message("yanked version"),
+                ]),
         );
 
         pack
@@ -229,13 +214,15 @@ impl<'a> crate::CheckCtx<'a, super::cfg::ValidConfig> {
     pub(crate) fn diag_for_index_failure<D: std::fmt::Display>(
         &self,
         krate: &crate::Krate,
-        krate_index: krates::NodeId,
         error: D,
     ) -> Pack {
-        let mut labels = vec![self.krate_spans.label_for_index(
-            krate_index.index(),
-            "crate whose registry we failed to query",
-        )];
+        let mut labels = vec![
+            Label::secondary(
+                self.krate_spans.lock_id,
+                self.krate_spans.lock_span(&krate.id).total,
+            )
+            .with_message("crate whose registry we failed to query"),
+        ];
 
         // Don't show the config location if it's the default, since it just points
         // to the beginning and confuses users

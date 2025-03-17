@@ -1,10 +1,10 @@
 use super::OrgType;
 use crate::{
+    LintLevel, Spanned,
     cfg::{self, ValidationContext},
     diag::FileId,
-    LintLevel, Spanned,
 };
-use toml_span::{de_helpers::TableHelper, value::Value, DeserError, Deserialize};
+use toml_span::{DeserError, Deserialize, de_helpers::TableHelper, value::Value};
 
 #[derive(Default)]
 pub struct Orgs {
@@ -48,11 +48,10 @@ impl<'de> Deserialize<'de> for Orgs {
 )]
 #[strum(serialize_all = "kebab-case")]
 pub enum GitSpec {
-    /// Specifies the HEAD of the `master` branch, though eventually this might
-    /// change to the default branch
+    /// Specifies the `HEAD` of the remote
     #[default]
     Any,
-    /// Specifies the HEAD of a particular branch
+    /// Specifies the `HEAD` of a particular branch
     Branch,
     /// Specifies the commit pointed to by a particular tag
     Tag,
@@ -158,15 +157,6 @@ impl cfg::UnvalidatedConfig for Config {
 
             if let Some(start_scheme) = astr.find("://") {
                 if let Some(i) = astr[..start_scheme].find('+') {
-                    ctx.push(
-                        Diagnostic::warning()
-                            .with_message("scheme modifiers are unnecessary")
-                            .with_labels(vec![Label::primary(
-                                ctx.cfg_id,
-                                aurl.span.start..aurl.span.start + start_scheme,
-                            )]),
-                    );
-
                     skip = i + 1;
                 }
             }
@@ -190,7 +180,7 @@ impl cfg::UnvalidatedConfig for Config {
                         Diagnostic::error()
                             .with_message("failed to parse url")
                             .with_labels(vec![
-                                Label::primary(ctx.cfg_id, aurl.span).with_message(pe.to_string())
+                                Label::primary(ctx.cfg_id, aurl.span).with_message(pe.to_string()),
                             ]),
                     );
                 }
@@ -250,7 +240,7 @@ pub struct ValidConfig {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::test_utils::{write_diagnostics, ConfigData};
+    use crate::test_utils::{ConfigData, write_diagnostics};
 
     #[test]
     fn deserializes_sources_cfg() {

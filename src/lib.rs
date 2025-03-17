@@ -21,8 +21,8 @@ pub use cfg::UnvalidatedConfig;
 use krates::cm;
 pub use krates::{DepKind, Kid};
 pub use toml_span::{
-    span::{Span, Spanned},
     Deserialize, Error,
+    span::{Span, Spanned},
 };
 
 /// The possible lint levels for the various lints. These function similarly
@@ -61,6 +61,7 @@ macro_rules! enum_deser {
                     return Err(toml_span::Error::from((
                         toml_span::ErrorKind::UnexpectedValue {
                             expected: <$enum as VariantNames>::VARIANTS,
+                            value: None,
                         },
                         value.span,
                     ))
@@ -80,8 +81,12 @@ pub enum Source {
     /// crates.io, the boolean indicates whether it is a sparse index
     CratesIo(bool),
     /// A remote git patch
-    Git { spec: GitSpec, url: Url },
-    /// A remote git index
+    Git {
+        spec: GitSpec,
+        url: Url,
+        spec_value: Option<String>,
+    },
+    /// A remote non-sparse registry index
     Registry(Url),
     /// A remote sparse index
     Sparse(Url),
@@ -89,10 +94,30 @@ pub enum Source {
 
 /// The directory name under which crates sourced from the crates.io sparse
 /// registry are placed
-#[cfg(target_endian = "little")]
-const CRATES_IO_SPARSE_DIR: &str = "index.crates.io-6f17d22bba15001f";
-#[cfg(target_endian = "big")]
-const CRATES_IO_SPARSE_DIR: &str = "index.crates.io-d11c229612889eed";
+fn crates_io_sparse_dir() -> &'static str {
+    static mut CRATES_IO_SPARSE_DIR: String = String::new();
+    static CRATES_IO_INIT: parking_lot::Once = parking_lot::Once::new();
+
+    #[allow(unsafe_code)]
+    // SAFETY: We're mutating a static, but we only allow one mutation
+    unsafe {
+        CRATES_IO_INIT.call_once(|| {
+            let Ok(version) = tame_index::utils::cargo_version(None) else {
+                return;
+            };
+            let Ok(url_dir) = tame_index::utils::url_to_local_dir(
+                tame_index::CRATES_IO_HTTP_INDEX,
+                version >= semver::Version::new(1, 85, 0),
+            ) else {
+                return;
+            };
+            CRATES_IO_SPARSE_DIR = url_dir.dir_name;
+        });
+
+        #[allow(static_mut_refs)]
+        &CRATES_IO_SPARSE_DIR
+    }
+}
 
 impl Source {
     pub fn crates_io(is_sparse: bool) -> Self {
@@ -130,9 +155,9 @@ impl Source {
             "registry" => {
                 if url_str == tame_index::CRATES_IO_INDEX {
                     // registry/src/index.crates.io-6f17d22bba15001f/crate-version/Cargo.toml
-                    let is_sparse = manifest_path.ancestors().nth(2).map_or(false, |dir| {
+                    let is_sparse = manifest_path.ancestors().nth(2).is_some_and(|dir| {
                         dir.file_name()
-                            .map_or(false, |dir_name| dir_name == CRATES_IO_SPARSE_DIR)
+                            .is_some_and(|dir_name| dir_name == crates_io_sparse_dir())
                     });
                     Ok(Self::crates_io(is_sparse))
                 } else {
@@ -143,9 +168,13 @@ impl Source {
             }
             "git" => {
                 let mut url = Url::parse(url_str).context("failed to parse url")?;
-                let spec = normalize_git_url(&mut url);
+                let (spec, spec_value) = normalize_git_url(&mut url);
 
-                Ok(Self::Git { url, spec })
+                Ok(Self::Git {
+                    url,
+                    spec,
+                    spec_value,
+                })
             }
             unknown => anyhow::bail!("unknown source spec '{unknown}' for url {urls}"),
         }
@@ -335,11 +364,12 @@ impl From<cm::Package> for Krate {
             license_file: pkg.license_file,
             description: pkg.description,
             manifest_path: pkg.manifest_path,
-            deps: {
-                let mut deps = pkg.dependencies;
-                deps.sort_by(|a, b| a.name.cmp(&b.name));
-                deps
-            },
+            deps: pkg.dependencies,
+            // {
+            //     let mut deps = pkg.dependencies;
+            //     deps.sort_by(|a, b| a.name.cmp(&b.name));
+            //     deps
+            // },
             features: pkg.features,
             publish: pkg.publish,
         }
@@ -350,7 +380,7 @@ impl Krate {
     /// Returns true if the crate is marked as `publish = false`, or
     /// it is only published to the specified private registries
     pub(crate) fn is_private(&self, private_registries: &[&str]) -> bool {
-        self.publish.as_ref().map_or(false, |v| {
+        self.publish.as_ref().is_some_and(|v| {
             if v.is_empty() {
                 true
             } else {
@@ -379,18 +409,24 @@ impl Krate {
             Source::Sparse(surl) | Source::Registry(surl) | Source::Git { url: surl, .. } => surl,
         };
 
-        kurl.host() == url.host() && (exact && kurl.path() == url.path())
-            || (!exact && kurl.path().starts_with(url.path()))
+        kurl.host() == url.host()
+            && ((exact && kurl.path() == url.path())
+                || (!exact && kurl.path().starts_with(url.path())))
     }
 
     #[inline]
     pub(crate) fn is_crates_io(&self) -> bool {
-        self.source.as_ref().map_or(false, |src| src.is_crates_io())
+        self.source.as_ref().is_some_and(|src| src.is_crates_io())
     }
 
     #[inline]
     pub(crate) fn is_git_source(&self) -> bool {
-        self.source.as_ref().map_or(false, |src| src.is_git())
+        self.source.as_ref().is_some_and(|src| src.is_git())
+    }
+
+    #[inline]
+    pub(crate) fn is_registry(&self) -> bool {
+        self.source.as_ref().is_some_and(|src| src.is_registry())
     }
 }
 
@@ -439,7 +475,7 @@ pub struct CheckCtx<'ctx, T> {
     /// The krates graph to check
     pub krates: &'ctx Krates,
     /// The spans for each unique crate in a synthesized "lock file"
-    pub krate_spans: &'ctx diag::KrateSpans,
+    pub krate_spans: &'ctx diag::KrateSpans<'ctx>,
     /// Requests for additional information the check can provide to be
     /// serialized to the diagnostic
     pub serialize_extra: bool,
@@ -448,13 +484,15 @@ pub struct CheckCtx<'ctx, T> {
     /// Log level specified by the user, may be used by checks to determine what
     /// information to emit in diagnostics
     pub log_level: log::LevelFilter,
+    /// Files that can show span information in diagnostics
+    pub files: &'ctx diag::Files,
 }
 
 /// Checks if a version satisfies the specifies the specified version requirement.
 /// If the requirement is `None` then it is also satisfied.
 #[inline]
 pub fn match_req(version: &Version, req: Option<&semver::VersionReq>) -> bool {
-    req.map_or(true, |req| req.matches(version))
+    req.is_none_or(|req| req.matches(version))
 }
 
 #[inline]
@@ -464,18 +502,20 @@ pub fn match_krate(krate: &Krate, pid: &cfg::PackageSpec) -> bool {
 
 use sources::cfg::GitSpec;
 
+/// Normalizes the URL so that different representations can be compared to each other.
+///
+/// At the moment we just remove a tailing `.git` but there are more possible optimisations.
+///
+/// See <https://github.com/rust-lang/cargo/blob/1f6c6bd5e7bbdf596f7e88e6db347af5268ab113/src/cargo/util/canonical_url.rs#L31-L57>
+/// for what cargo does
 #[inline]
-pub(crate) fn normalize_git_url(url: &mut Url) -> GitSpec {
-    // Normalizes the URL so that different representations can be compared to each other.
-    // At the moment we just remove a tailing `.git` but there are more possible optimisations.
-    // See https://github.com/rust-lang/cargo/blob/1f6c6bd5e7bbdf596f7e88e6db347af5268ab113/src/cargo/util/canonical_url.rs#L31-L57
-    // for what cargo does
+pub(crate) fn normalize_git_url(url: &mut Url) -> (GitSpec, Option<String>) {
     const GIT_EXT: &str = ".git";
 
     let needs_chopping = url.path().ends_with(&GIT_EXT);
     if needs_chopping {
         let last = {
-            let last = url.path_segments().unwrap().last().unwrap();
+            let last = url.path_segments().unwrap().next_back().unwrap();
             last[..last.len() - GIT_EXT.len()].to_owned()
         };
         url.path_segments_mut().unwrap().pop().push(&last);
@@ -486,14 +526,17 @@ pub(crate) fn normalize_git_url(url: &mut Url) -> GitSpec {
     }
 
     let mut spec = GitSpec::Any;
+    let mut spec_value = None;
 
-    for (k, _v) in url.query_pairs() {
+    for (k, v) in url.query_pairs() {
         spec = match k.as_ref() {
             "branch" | "ref" => GitSpec::Branch,
             "tag" => GitSpec::Tag,
             "rev" => GitSpec::Rev,
             _ => continue,
         };
+
+        spec_value = Some(v.into_owned());
     }
 
     if url
@@ -513,12 +556,13 @@ pub(crate) fn normalize_git_url(url: &mut Url) -> GitSpec {
                 write!(&mut nq, "{k}={v}&").unwrap();
             }
 
+            // pop trailing &
             nq.pop();
             url.set_query(Some(&nq));
         }
     }
 
-    spec
+    (spec, spec_value)
 }
 
 /// Helper function to convert a std `PathBuf` to a camino one
@@ -592,7 +636,7 @@ pub fn krates_with_index(
 
 #[cfg(test)]
 mod test {
-    use super::Source;
+    use super::{Krate, PathBuf, Source, Url};
 
     #[test]
     fn parses_sources() {
@@ -608,7 +652,7 @@ mod test {
             format!("registry+{}", tame_index::CRATES_IO_INDEX),
             super::Path::new(&format!(
                 "registry/src/{}/cargo-deny-0.69.0/Cargo.toml",
-                super::CRATES_IO_SPARSE_DIR
+                super::crates_io_sparse_dir(),
             )),
         )
         .unwrap();
@@ -624,12 +668,14 @@ mod test {
                 && crates_io_sparse_but_git.is_crates_io()
         );
 
-        assert!(Source::from_metadata(
-            "registry+https://my-own-my-precious.com/".to_owned(),
-            empty_dir
-        )
-        .unwrap()
-        .is_registry());
+        assert!(
+            Source::from_metadata(
+                "registry+https://my-own-my-precious.com/".to_owned(),
+                empty_dir
+            )
+            .unwrap()
+            .is_registry()
+        );
         assert!(
             Source::from_metadata("sparse+https://my-registry.rs/".to_owned(), empty_dir)
                 .unwrap()
@@ -646,11 +692,47 @@ mod test {
     /// meh, we depend on tame-index to stay up to date
     #[test]
     fn validate_crates_io_sparse_dir_name() {
+        let stable =
+            tame_index::utils::cargo_version(None).unwrap() >= tame_index::Version::new(1, 85, 0);
         assert_eq!(
-            tame_index::utils::url_to_local_dir(tame_index::CRATES_IO_HTTP_INDEX)
+            tame_index::utils::url_to_local_dir(tame_index::CRATES_IO_HTTP_INDEX, stable)
                 .unwrap()
                 .dir_name,
-            super::CRATES_IO_SPARSE_DIR
+            super::crates_io_sparse_dir(),
         );
+    }
+
+    #[test]
+    fn inexact_match_fails_for_different_hosts() {
+        let krate = Krate {
+            source: Some(
+                Source::from_metadata(
+                    "git+ssh://git@repo1.test.org/path/test.git".to_owned(),
+                    &PathBuf::new(),
+                )
+                .unwrap(),
+            ),
+            ..Krate::default()
+        };
+        let url = Url::parse("ssh://git@repo2.test.org:8000").unwrap();
+
+        assert!(!krate.matches_url(&url, false));
+    }
+
+    #[test]
+    fn inexact_match_passes_for_same_hosts() {
+        let krate = Krate {
+            source: Some(
+                Source::from_metadata(
+                    "git+ssh://git@repo1.test.org/path/test.git".to_owned(),
+                    &PathBuf::new(),
+                )
+                .unwrap(),
+            ),
+            ..Krate::default()
+        };
+        let url = Url::parse("ssh://git@repo1.test.org:8000").unwrap();
+
+        assert!(krate.matches_url(&url, false));
     }
 }

@@ -1,7 +1,7 @@
 use cargo_deny::{
+    PathBuf,
     diag::{self, FileId, Files, Severity},
     licenses::LicenseStore,
-    PathBuf,
 };
 
 mod cfg;
@@ -23,10 +23,8 @@ pub struct KrateContext {
     pub frozen: bool,
     pub locked: bool,
     pub offline: bool,
-    /// If true, allows using the crates.io git index, otherwise the sparse index
-    /// is assumed to be the only index
-    pub allow_git_index: bool,
     pub exclude_dev: bool,
+    pub exclude_unpublished: bool,
 }
 
 impl KrateContext {
@@ -172,7 +170,14 @@ impl KrateContext {
                     }),
             );
         }
-
+        if self.exclude_unpublished {
+            gb.include_workspace_crates(metadata.workspace_packages().iter().filter_map(
+                |package| match package.publish {
+                    Some(ref registries) if registries.is_empty() => None,
+                    _ => Some(package.manifest_path.as_std_path()),
+                },
+            ));
+        }
         // Attempt to open the crates.io index so that the feature sets for every
         // crate in the graph are correct, however, don't consider it a hard failure
         // if we can't for some reason, as the graph will _probably_ still be accurate
@@ -181,7 +186,9 @@ impl KrateContext {
         // what this can look like in practice if we don't have the index metadata
         // to supplement/fix the cargo metadata
         if let Err(err) = cargo_deny::krates_with_index(&mut gb, None, None) {
-            log::error!("failed to open the local crates.io index, feature sets for crates may not be correct: {err}");
+            log::error!(
+                "failed to open the local crates.io index, feature sets for crates may not be correct: {err}"
+            );
         }
 
         let graph = gb.build_with_metadata(metadata, |filtered: krates::cm::Package| {
@@ -206,7 +213,6 @@ impl KrateContext {
         Ok(graph?)
     }
 
-    #[cfg(not(feature = "standalone"))]
     fn get_metadata(opts: MetadataOptions) -> Result<krates::cm::Metadata, anyhow::Error> {
         let mut mdc = krates::Cmd::new();
 
@@ -229,61 +235,6 @@ impl KrateContext {
         let mdc: krates::cm::MetadataCommand = mdc.into();
         Ok(mdc.exec()?)
     }
-
-    #[cfg(feature = "standalone")]
-    fn get_metadata(opts: MetadataOptions) -> Result<krates::cm::Metadata, anyhow::Error> {
-        use anyhow::Context as _;
-        use cargo::{core, ops, util};
-
-        let mut config = util::Config::default()?;
-
-        config.configure(
-            0,
-            true,
-            None,
-            opts.frozen,
-            opts.locked,
-            opts.offline,
-            &None,
-            &[],
-            &[],
-        )?;
-
-        let mut manifest_path = opts.manifest_path;
-
-        // Cargo doesn't like non-absolute paths
-        if !manifest_path.is_absolute() {
-            manifest_path = cargo_deny::utf8path(
-                std::env::current_dir()
-                    .context("unable to determine current directory")?
-                    .join(manifest_path),
-            )?;
-        }
-
-        let features = std::rc::Rc::new(
-            opts.features
-                .into_iter()
-                .map(|feat| core::FeatureValue::new(util::interning::InternedString::new(&feat)))
-                .collect(),
-        );
-
-        let ws = core::Workspace::new(manifest_path.as_std_path(), &config)?;
-        let options = ops::OutputMetadataOptions {
-            cli_features: core::resolver::features::CliFeatures {
-                features,
-                all_features: opts.all_features,
-                uses_default_features: !opts.no_default_features,
-            },
-            no_deps: false,
-            version: 1,
-            filter_platforms: vec![],
-        };
-
-        let md = ops::output_metadata(&ws, &options)?;
-        let md_value = serde_json::to_value(md)?;
-
-        Ok(serde_json::from_value(md_value)?)
-    }
 }
 
 struct MetadataOptions {
@@ -296,7 +247,6 @@ struct MetadataOptions {
     offline: bool,
 }
 
-#[cfg(not(feature = "standalone"))]
 fn fetch(opts: MetadataOptions) -> anyhow::Result<()> {
     use anyhow::Context as _;
     let mut cargo =
@@ -324,45 +274,6 @@ fn fetch(opts: MetadataOptions) -> anyhow::Result<()> {
     } else {
         anyhow::bail!(String::from_utf8(output.stderr).context("non-utf8 error output")?);
     }
-}
-
-#[cfg(feature = "standalone")]
-fn fetch(opts: MetadataOptions) -> anyhow::Result<()> {
-    use anyhow::Context;
-    use cargo::{core, ops, util};
-
-    let mut config = util::Config::default()?;
-
-    config.configure(
-        0,
-        true,
-        None,
-        opts.frozen,
-        opts.locked,
-        opts.offline,
-        &None,
-        &[],
-        &[],
-    )?;
-
-    let mut manifest_path = opts.manifest_path;
-
-    // Cargo doesn't like non-absolute paths
-    if !manifest_path.is_absolute() {
-        manifest_path = cargo_deny::utf8path(
-            std::env::current_dir()
-                .context("unable to determine current directory")?
-                .join(manifest_path),
-        )?;
-    }
-
-    let ws = core::Workspace::new(manifest_path.as_std_path(), &config)?;
-    let options = ops::FetchOptions {
-        config: &config,
-        targets: Vec::new(),
-    };
-    ops::fetch(&ws, &options)?;
-    Ok(())
 }
 
 #[inline]
@@ -439,7 +350,7 @@ enum OutputFormat<'a> {
 }
 
 impl<'a> OutputFormat<'a> {
-    fn lock(&'a self, max_severity: Severity) -> OutputLock<'a, '_> {
+    fn lock(&'a self, max_severity: Severity) -> OutputLock<'a, 'a> {
         match self {
             Self::Human(human) => OutputLock::Human(
                 human,
@@ -457,7 +368,7 @@ pub enum StdLock<'a> {
     //Out(std::io::StdoutLock<'a>),
 }
 
-impl<'a> Write for StdLock<'a> {
+impl Write for StdLock<'_> {
     fn write(&mut self, d: &[u8]) -> std::io::Result<usize> {
         match self {
             Self::Err(stderr) => stderr.write(d),
@@ -483,7 +394,7 @@ pub enum OutputLock<'a, 'b> {
     Json(&'a Json<'a>, Severity, StdLock<'b>),
 }
 
-impl<'a, 'b> OutputLock<'a, 'b> {
+impl OutputLock<'_, '_> {
     pub fn print(&mut self, diag: CsDiag, files: &Files) {
         match self {
             Self::Human(cfg, max, l, _) => {
@@ -599,7 +510,7 @@ impl<'a> DiagPrinter<'a> {
                     which: OutputFormat::Human(Human {
                         stream,
                         grapher: krates.map(diag::InclusionGrapher::new),
-                        config: term::Config::default(),
+                        config: cargo_deny::diag::codespan_config(),
                         feature_depth,
                     }),
                     max_severity,
@@ -616,7 +527,7 @@ impl<'a> DiagPrinter<'a> {
     }
 
     #[inline]
-    pub fn lock(&'a self) -> OutputLock<'a, '_> {
+    pub fn lock(&'a self) -> OutputLock<'a, 'a> {
         self.which.lock(self.max_severity)
     }
 }

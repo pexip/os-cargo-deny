@@ -19,6 +19,11 @@ deny = [
 ]
 skip-tree = [{ name = "blah", depth = 20 }]
 
+[bans.workspace-dependencies]
+duplicates = "allow"
+include-path-dependencies = false
+unused = "allow"
+
 [[bans.skip]]
 name = "rand"
 version = "=0.6.5"

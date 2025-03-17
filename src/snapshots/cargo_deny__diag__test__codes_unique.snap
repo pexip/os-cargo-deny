@@ -1,6 +1,7 @@
 ---
 source: src/diag.rs
 expression: unique
+snapshot_kind: text
 ---
 {
     "accepted",
@@ -52,10 +53,14 @@ expression: unique
     "unmatched-skip-root",
     "unmatched-source",
     "unmatched-wrapper",
+    "unnecessary-skip",
+    "unresolved-workspace-dependency",
     "unsound",
+    "unused-workspace-dependency",
     "unused-wrapper",
     "vulnerability",
     "wildcard",
+    "workspace-duplicate",
     "yanked",
     "yanked-ignored",
     "yanked-not-detected",

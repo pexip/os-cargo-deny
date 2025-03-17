@@ -5,7 +5,7 @@ use krates::petgraph as pg;
 use semver::Version;
 use std::{
     borrow::Cow,
-    collections::{btree_map::Entry, BTreeMap, HashSet},
+    collections::{BTreeMap, HashSet, btree_map::Entry},
     fmt,
 };
 
@@ -24,13 +24,13 @@ impl<'a, 'b: 'a> From<&'b Krate> for Node<'a> {
     }
 }
 
-impl<'a> fmt::Debug for Node<'a> {
+impl fmt::Debug for Node<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}({})", self.name, self.version)
     }
 }
 
-impl<'a> fmt::Display for Node<'a> {
+impl fmt::Display for Node<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}({})", self.name, self.version)
     }
@@ -60,7 +60,7 @@ struct NodeAttributes<'a> {
     fill_color: Option<&'static str>,
 }
 
-impl<'a> NodeAttributes<'a> {
+impl NodeAttributes<'_> {
     fn has_attrs(&self) -> bool {
         self.label.is_some()
             || self.shape.is_some()
@@ -88,7 +88,7 @@ pub(crate) fn create_graph(
     dup_name: &str,
     highlight: GraphHighlight,
     krates: &crate::Krates,
-    dup_ids: &[usize],
+    dup_ids: &[(usize, bool)],
 ) -> Result<String, Error> {
     use pg::visit::{EdgeRef, NodeRef};
 
@@ -97,16 +97,23 @@ pub(crate) fn create_graph(
 
     let mut node_stack = Vec::with_capacity(dup_ids.len());
 
-    let duplicates: Vec<_> = dup_ids.iter().map(|di| krates[*di].id.clone()).collect();
+    let duplicates: Vec<_> = dup_ids
+        .iter()
+        .filter_map(|(di, skipped)| (!*skipped).then_some(krates[*di].id.clone()))
+        .collect();
 
-    for (index, dupid) in dup_ids.iter().zip(duplicates.iter()) {
+    for (index, dupid) in dup_ids
+        .iter()
+        .filter_map(|(index, skipped)| (!*skipped).then_some(*index))
+        .zip(duplicates.iter())
+    {
         let dn = DupNode {
             kid: dupid,
             feature: None,
         };
         let nid = graph.add_node(dn);
         node_map.insert(dn, nid);
-        node_stack.push((krates::NodeId::new(*index), nid));
+        node_stack.push((krates::NodeId::new(index), nid));
     }
 
     {

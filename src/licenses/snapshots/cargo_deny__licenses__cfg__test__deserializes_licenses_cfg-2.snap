@@ -3,7 +3,7 @@ source: src/licenses/cfg.rs
 expression: validated
 ---
 {
-  "file_id": 1,
+  "file_id": 0,
   "private": {
     "ignore": true,
     "ignore_sources": [],
@@ -13,10 +13,6 @@ expression: validated
   },
   "unused_allowed_license": "warn",
   "confidence_threshold": 0.95,
-  "denied": [
-    "BSD-2-Clause",
-    "Nokia"
-  ],
   "allowed": [
     "Apache-2.0 WITH LLVM-exception",
     "EUPL-1.2"
@@ -45,16 +41,9 @@ expression: validated
       "allowed": [
         "Zlib"
       ],
-      "file_id": 1
+      "file_id": 0
     }
   ],
   "ignore_sources": [],
-  "deprecated": {
-    "unlicensed": "warn",
-    "allow_osi_fsf_free": "Both",
-    "copyleft": "deny",
-    "default": "warn",
-    "deny": []
-  },
   "include_dev": false
 }

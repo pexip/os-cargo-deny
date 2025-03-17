@@ -1,7 +1,7 @@
 use crate::{Krate, Krates, Path, PathBuf};
 use anyhow::Context as _;
 use log::{debug, info};
-pub use rustsec::{advisory::Id, Database};
+pub use rustsec::{Database, advisory::Id};
 use std::fmt;
 use url::Url;
 
@@ -88,9 +88,20 @@ impl DbSet {
 }
 
 /// Convert an advisory url to a directory underneath a specified root
+///
+/// This uses a similar, but different, scheme to how cargo names eg. index
+/// directories, we take the path portion of the url and use that as a friendly
+/// identifier, but then hash the url as the user provides it to ensure the
+/// directory name is unique
 fn url_to_db_path(mut db_path: PathBuf, url: &Url) -> anyhow::Result<PathBuf> {
-    let local_dir = tame_index::utils::url_to_local_dir(url.as_str())?;
-    db_path.push(local_dir.dir_name);
+    let url = Url::parse(&url.as_str().to_lowercase())?;
+    let name = url
+        .path_segments()
+        .and_then(|mut ps| ps.next_back())
+        .unwrap_or("empty_");
+
+    let hash = twox_hash::XxHash64::oneshot(0xca80de71, url.as_str().as_bytes());
+    db_path.push(format!("{name}-{hash:016x}"));
 
     Ok(db_path)
 }
@@ -227,12 +238,12 @@ fn fetch_and_checkout(repo: &mut gix::Repository) -> anyhow::Result<()> {
     {
         let mut config = repo.config_snapshot_mut();
         config
-            .set_raw_value("committer", None, "name", "cargo-deny")
+            .set_raw_value(&"committer.name", "cargo-deny")
             .context("failed to set `committer.name`")?;
         // Note we _have_ to set the email as well, but luckily gix does not actually
         // validate if it's a proper email or not :)
         config
-            .set_raw_value("committer", None, "email", "")
+            .set_raw_value(&"committer.email", "")
             .context("failed to set `committer.email`")?;
 
         let repo = config
@@ -259,7 +270,7 @@ fn fetch_and_checkout(repo: &mut gix::Repository) -> anyhow::Result<()> {
         let remote_head_id = tame_index::utils::git::write_fetch_head(&repo, &outcome, &remote)
             .context("failed to write FETCH_HEAD")?;
 
-        use gix::refs::{transaction as tx, Target};
+        use gix::refs::{Target, transaction as tx};
 
         // In all (hopefully?) cases HEAD is a symbolic reference to
         // refs/heads/<branch> which is a peeled commit id, if that's the case
@@ -278,7 +289,7 @@ fn fetch_and_checkout(repo: &mut gix::Repository) -> anyhow::Result<()> {
                                 message: "".into(),
                             },
                             expected: tx::PreviousValue::MustExist,
-                            new: gix::refs::Target::Peeled(remote_head_id),
+                            new: gix::refs::Target::Object(remote_head_id),
                         },
                         name,
                         deref: true,
@@ -298,7 +309,7 @@ fn fetch_and_checkout(repo: &mut gix::Repository) -> anyhow::Result<()> {
                     message: "".into(),
                 },
                 expected: tx::PreviousValue::Any,
-                new: gix::refs::Target::Peeled(remote_head_id),
+                new: gix::refs::Target::Object(remote_head_id),
             },
             name: "HEAD".try_into().unwrap(),
             deref: true,
@@ -407,10 +418,10 @@ fn fetch_via_gix(url: &Url, db_path: &Path) -> anyhow::Result<()> {
         .ok()
         .map(|repo| repo.to_thread_local())
         .filter(|repo| {
-            repo.find_remote("origin").map_or(false, |remote| {
+            repo.find_remote("origin").is_ok_and(|remote| {
                 remote
                     .url(DIR)
-                    .map_or(false, |remote_url| remote_url.to_bstring() == url.as_str())
+                    .is_some_and(|remote_url| remote_url.to_bstring() == url.as_str())
             })
         })
         .or_else(|| gix::open_opts(db_path, open_with_complete_config).ok());
@@ -530,7 +541,7 @@ fn fetch_via_cli(url: &str, db_path: &Path) -> anyhow::Result<()> {
 }
 
 pub struct Report<'db, 'k> {
-    pub advisories: Vec<(&'k Krate, krates::NodeId, &'db rustsec::Advisory)>,
+    pub advisories: Vec<(&'k Krate, &'db rustsec::Advisory)>,
     /// For backwards compatibility with cargo-audit, we optionally serialize the
     /// reports to JSON and output them in addition to the normal cargo-deny
     /// diagnostics
@@ -580,7 +591,7 @@ impl<'db, 'k> Report<'db, 'k> {
                     advisory
                         .metadata
                         .collection
-                        .map_or(true, |c| c == rustsec::Collection::Crates)
+                        .is_none_or(|c| c == rustsec::Collection::Crates)
                 })
                 .flat_map(|advisory| {
                     krates
@@ -599,7 +610,7 @@ impl<'db, 'k> Report<'db, 'k> {
                                 return None;
                             }
 
-                            Some((km.krate, km.node_id, advisory))
+                            Some((km.krate, advisory))
                         })
                 })
                 .collect();
@@ -608,7 +619,7 @@ impl<'db, 'k> Report<'db, 'k> {
                 let mut warnings = std::collections::BTreeMap::<_, Vec<rustsec::Warning>>::new();
                 let mut vulns = Vec::new();
 
-                for (krate, _nid, advisory) in &db_advisories {
+                for (krate, advisory) in &db_advisories {
                     let package = rustsec::package::Package {
                         // :(
                         name: krate.name.parse().unwrap(),
@@ -655,8 +666,8 @@ impl<'db, 'k> Report<'db, 'k> {
                     settings: rustsec::report::Settings {
                         // We already prune packages we don't care about, so don't filter
                         // any here
-                        target_arch: None,
-                        target_os: None,
+                        target_arch: Vec::new(),
+                        target_os: Vec::new(),
                         // We handle the severity ourselves
                         severity: None,
                         // We handle the ignoring of particular advisory ids ourselves
@@ -687,70 +698,11 @@ impl<'db, 'k> Report<'db, 'k> {
             advisories.append(&mut db_advisories);
         }
 
-        advisories.sort_by(|a, b| a.1.cmp(&b.1));
+        advisories.sort_by(|a, b| a.0.cmp(b.0));
 
         Self {
             advisories,
             serialized_reports,
-        }
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::url_to_db_path;
-    use url::Url;
-
-    #[test]
-    fn converts_url_to_path() {
-        let root_path = crate::utf8path(std::env::current_dir().unwrap()).unwrap();
-
-        {
-            let url = Url::parse("https://github.com/RustSec/advisory-db").unwrap();
-
-            #[cfg(target_endian = "little")]
-            assert_eq!(
-                url_to_db_path(root_path.clone(), &url).unwrap(),
-                root_path.join("github.com-a946fc29ac602819")
-            );
-
-            #[cfg(target_endian = "big")]
-            assert_eq!(
-                url_to_db_path(root_path.clone(), &url).unwrap(),
-                root_path.join("github.com-f4edf1c00e90fd42")
-            );
-        }
-
-        {
-            let url = Url::parse("https://bare.com").unwrap();
-
-            #[cfg(target_endian = "little")]
-            assert_eq!(
-                url_to_db_path(root_path.clone(), &url).unwrap(),
-                root_path.join("bare.com-9c003d1ed306b28c")
-            );
-
-            #[cfg(target_endian = "big")]
-            assert_eq!(
-                url_to_db_path(root_path.clone(), &url).unwrap(),
-                root_path.join("bare.com-c9767e4ee31501de")
-            );
-        }
-
-        {
-            let url = Url::parse("https://example.com/countries/việt nam").unwrap();
-
-            #[cfg(target_endian = "little")]
-            assert_eq!(
-                url_to_db_path(root_path.clone(), &url).unwrap(),
-                root_path.join("example.com-1c03f84825fb7438")
-            );
-
-            #[cfg(target_endian = "big")]
-            assert_eq!(
-                url_to_db_path(root_path.clone(), &url).unwrap(),
-                root_path.join("example.com-5ebf17a6f3e576f0")
-            );
         }
     }
 }

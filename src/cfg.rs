@@ -10,7 +10,7 @@ pub struct ValidationContext<'ctx> {
     pub diagnostics: &'ctx mut Vec<diag::Diagnostic>,
 }
 
-impl<'ctx> ValidationContext<'ctx> {
+impl ValidationContext<'_> {
     #[inline]
     pub fn push(&mut self, diag: diag::Diagnostic) {
         self.diagnostics.push(diag);
@@ -52,6 +52,22 @@ pub trait UnvalidatedConfig {
     fn validate(self, ctx: ValidationContext<'_>) -> Self::ValidCfg;
 }
 
+#[derive(Copy, Clone, PartialEq, strum::VariantNames, strum::VariantArray)]
+#[cfg_attr(test, derive(serde::Serialize))]
+#[strum(serialize_all = "kebab-case")]
+pub enum Scope {
+    /// Matches any crate
+    All,
+    /// Matches crates in the workspace
+    Workspace,
+    /// Matches external crates
+    Transitive,
+    /// Matches no crates
+    None,
+}
+
+crate::enum_deser!(Scope);
+
 #[derive(Clone)]
 #[cfg_attr(test, derive(Debug, PartialEq, Eq, serde::Serialize))]
 pub struct Reason(pub Spanned<String>);
@@ -86,11 +102,5 @@ where
     let (k, mut v) = th.take(field)?;
     spans.push(k.span);
 
-    match T::deserialize(&mut v) {
-        Ok(v) => Some(v),
-        Err(mut err) => {
-            th.errors.append(&mut err.errors);
-            None
-        }
-    }
+    T::deserialize(&mut v).ok()
 }

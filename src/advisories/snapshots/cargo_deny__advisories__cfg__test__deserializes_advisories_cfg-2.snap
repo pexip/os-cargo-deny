@@ -3,7 +3,7 @@ source: src/advisories/cfg.rs
 expression: validated
 ---
 {
-  "file_id": 1,
+  "file_id": 0,
   "db_path": "/home/you/.cargo/advisory-dbs",
   "db_urls": [
     "https://github.com/RustSec/advisory-db"
@@ -14,6 +14,7 @@ expression: validated
       "reason": null
     }
   ],
+  "unmaintained": "Workspace",
   "ignore_yanked": [
     {
       "spec": {
@@ -32,13 +33,6 @@ expression: validated
       "use-instead": null
     }
   ],
-  "deprecated": {
-    "vulnerability": "deny",
-    "unmaintained": "warn",
-    "unsound": "warn",
-    "notice": "warn",
-    "severity_threshold": "medium"
-  },
   "yanked": "warn",
   "git_fetch_with_cli": false,
   "disable_yank_checking": false,
