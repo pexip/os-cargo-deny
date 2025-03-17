@@ -1,12 +1,13 @@
 use crate::{
-    cfg::{PackageSpecOrExtended, Reason, ValidationContext},
+    LintLevel, PathBuf, Span, Spanned,
+    cfg::{PackageSpecOrExtended, Reason, Scope, ValidationContext},
     diag::{Diagnostic, FileId, Label},
-    utf8path, LintLevel, PathBuf, Span, Spanned,
+    utf8path,
 };
 use anyhow::Context as _;
 use rustsec::advisory;
 use time::Duration;
-use toml_span::{de_helpers::*, value::ValueInner, Deserialize, Value};
+use toml_span::{Deserialize, Value, de_helpers::*, value::ValueInner};
 use url::Url;
 
 pub(crate) type AdvisoryId = Spanned<advisory::Id>;
@@ -65,23 +66,6 @@ impl PartialEq for IgnoreId {
 
 impl Eq for IgnoreId {}
 
-#[cfg_attr(test, derive(serde::Serialize))]
-pub(crate) struct Deprecated {
-    /// How to handle crates that have a security vulnerability
-    pub vulnerability: LintLevel,
-    /// How to handle crates that have been marked as unmaintained in an advisory database
-    pub unmaintained: LintLevel,
-    /// How to handle crates that have been marked as unsound in an advisory database
-    pub unsound: LintLevel,
-    /// How to handle crates that have been marked with a notice in the advisory database
-    pub notice: LintLevel,
-    /// CVSS Qualitative Severity Rating Scale threshold to alert at.
-    ///
-    /// Vulnerabilities with explicit CVSS info which have a severity below
-    /// this threshold will be ignored.
-    pub severity_threshold: Option<advisory::Severity>,
-}
-
 pub struct Config {
     /// Path to the root directory where advisory databases are stored (default: $CARGO_HOME/advisory-dbs)
     pub db_path: Option<Spanned<PathBuf>>,
@@ -91,6 +75,8 @@ pub struct Config {
     pub yanked: Spanned<LintLevel>,
     /// Ignore advisories for the given IDs
     ignore: Vec<Spanned<IgnoreId>>,
+    /// Whether to error on unmaintained advisories, and for what scope
+    pub unmaintained: Spanned<Scope>,
     /// Ignore yanked crates
     pub ignore_yanked: Vec<Spanned<PackageSpecOrExtended<Reason>>>,
     /// Use the git executable to fetch advisory database rather than gitoxide
@@ -105,7 +91,6 @@ pub struct Config {
     /// use the '.' separator instead of ',' which is used by some locales and
     /// supported in the RFC3339 format, but not by this implementation
     pub maximum_db_staleness: Spanned<Duration>,
-    deprecated: Option<Deprecated>,
     deprecated_spans: Vec<Span>,
 }
 
@@ -115,12 +100,12 @@ impl Default for Config {
             db_path: None,
             db_urls: Vec::new(),
             ignore: Vec::new(),
+            unmaintained: Spanned::new(crate::cfg::Scope::All),
             ignore_yanked: Vec::new(),
             yanked: Spanned::new(LintLevel::Warn),
             git_fetch_with_cli: None,
             disable_yank_checking: false,
             maximum_db_staleness: Spanned::new(Duration::seconds_f64(NINETY_DAYS)),
-            deprecated: None,
             deprecated_spans: Vec::new(),
         }
     }
@@ -132,7 +117,7 @@ impl<'de> Deserialize<'de> for Config {
     fn deserialize(value: &mut Value<'de>) -> Result<Self, toml_span::DeserError> {
         let mut th = TableHelper::new(value)?;
 
-        let version = th.optional("version").unwrap_or(1);
+        let _version = th.optional("version").unwrap_or(1);
 
         let db_path = th.optional_s::<String>("db-path").map(|s| s.map());
         let db_urls = if let Some((_, mut urls)) = th.take("db-urls") {
@@ -162,10 +147,11 @@ impl<'de> Deserialize<'de> for Config {
 
         let mut fdeps = Vec::new();
 
-        let vulnerability = deprecated(&mut th, "vulnerability", &mut fdeps);
-        let unmaintained = deprecated(&mut th, "unmaintained", &mut fdeps);
-        let unsound = deprecated(&mut th, "unsound", &mut fdeps);
-        let notice = deprecated(&mut th, "notice", &mut fdeps);
+        let _vulnerability = deprecated::<LintLevel>(&mut th, "vulnerability", &mut fdeps);
+        let _unsound = deprecated::<LintLevel>(&mut th, "unsound", &mut fdeps);
+        let _notice = deprecated::<LintLevel>(&mut th, "notice", &mut fdeps);
+
+        let unmaintained = th.optional_s::<Scope>("unmaintained");
 
         let yanked = th
             .optional_s("yanked")
@@ -198,7 +184,7 @@ impl<'de> Deserialize<'de> for Config {
                                 v.set(ValueInner::String(s));
                             }
                             ValueInner::Table(tab) => {
-                                if tab.contains_key(&"id".into()) {
+                                if tab.contains_key("id") {
                                     v.set(ValueInner::Table(tab));
                                     match IgnoreId::deserialize(&mut v) {
                                         Ok(iid) => u.push(Spanned::with_span(iid, v.span)),
@@ -256,7 +242,7 @@ impl<'de> Deserialize<'de> for Config {
                 }
             };
 
-            match s.parse() {
+            match s.parse::<advisory::Severity>() {
                 Ok(st) => Some(st),
                 Err(err) => {
                     th.errors.push(
@@ -273,7 +259,7 @@ impl<'de> Deserialize<'de> for Config {
             }
         };
 
-        let severity_threshold = st(&mut th, &mut fdeps);
+        let _severity_threshold = st(&mut th, &mut fdeps);
         let git_fetch_with_cli = th.optional("git-fetch-with-cli");
         let disable_yank_checking = th.optional("disable-yank-checking").unwrap_or_default();
         let maximum_db_staleness = if let Some((_, mut val)) = th.take("maximum-db-staleness") {
@@ -306,28 +292,16 @@ impl<'de> Deserialize<'de> for Config {
         let maximum_db_staleness = maximum_db_staleness
             .unwrap_or_else(|| Spanned::new(Duration::seconds_f64(NINETY_DAYS)));
 
-        let deprecated = if version <= 1 {
-            Some(Deprecated {
-                vulnerability: vulnerability.unwrap_or(LintLevel::Deny),
-                unmaintained: unmaintained.unwrap_or(LintLevel::Warn),
-                unsound: unsound.unwrap_or(LintLevel::Warn),
-                notice: notice.unwrap_or(LintLevel::Warn),
-                severity_threshold,
-            })
-        } else {
-            None
-        };
-
         Ok(Self {
             db_path,
             db_urls,
             yanked,
             ignore,
+            unmaintained: unmaintained.unwrap_or(Spanned::new(Scope::All)),
             ignore_yanked,
             git_fetch_with_cli,
             disable_yank_checking,
             maximum_db_staleness,
-            deprecated,
             deprecated_spans: fdeps,
         })
     }
@@ -408,9 +382,9 @@ impl crate::cfg::UnvalidatedConfig for Config {
         for dep in self.deprecated_spans {
             ctx.push(
                 Deprecated {
-                    reason: DeprecationReason::WillBeRemoved(Some(
+                    reason: DeprecationReason::Removed(
                         "https://github.com/EmbarkStudios/cargo-deny/pull/611",
-                    )),
+                    ),
                     key: dep,
                     file_id: ctx.cfg_id,
                 }
@@ -423,6 +397,7 @@ impl crate::cfg::UnvalidatedConfig for Config {
             db_path: db_path.unwrap_or_default(), // If we failed to get a path the default won't be used since errors will have occurred
             db_urls,
             ignore: ignore.into_iter().map(|s| s.value).collect(),
+            unmaintained: self.unmaintained,
             ignore_yanked: ignore_yanked
                 .into_iter()
                 .map(|s| crate::bans::SpecAndReason {
@@ -432,7 +407,6 @@ impl crate::cfg::UnvalidatedConfig for Config {
                     file_id: ctx.cfg_id,
                 })
                 .collect(),
-            deprecated: self.deprecated,
             yanked: self.yanked,
             git_fetch_with_cli: self.git_fetch_with_cli.unwrap_or_default(),
             disable_yank_checking: self.disable_yank_checking,
@@ -447,8 +421,8 @@ pub struct ValidConfig {
     pub db_path: PathBuf,
     pub db_urls: Vec<Spanned<Url>>,
     pub(crate) ignore: Vec<IgnoreId>,
+    pub(crate) unmaintained: Spanned<Scope>,
     pub(crate) ignore_yanked: Vec<crate::bans::SpecAndReason>,
-    pub(crate) deprecated: Option<Deprecated>,
     pub yanked: Spanned<LintLevel>,
     pub git_fetch_with_cli: bool,
     pub disable_yank_checking: bool,
@@ -499,7 +473,9 @@ fn parse_rfc3339_duration(value: &str) -> anyhow::Result<Duration> {
     // of the function
     for c in value.chars() {
         if c == ',' {
-            anyhow::bail!("'{c}' is valid in the RFC-3339 duration format but not supported by this implementation, use '.' instead");
+            anyhow::bail!(
+                "'{c}' is valid in the RFC-3339 duration format but not supported by this implementation, use '.' instead"
+            );
         }
 
         if c != '.' && c != 'T' && !c.is_ascii_digit() && !UNITS.iter().any(|(uc, _)| c == *uc) {
@@ -754,7 +730,7 @@ fn shellexpand(
 mod test {
 
     use super::{parse_rfc3339_duration as dur_parse, *};
-    use crate::test_utils::{write_diagnostics, ConfigData};
+    use crate::test_utils::{ConfigData, write_diagnostics};
 
     struct Advisories {
         advisories: Config,
@@ -994,7 +970,7 @@ expansions = [
         let toml_span::value::ValueInner::Table(mut tab) = tv.take() else {
             unreachable!()
         };
-        let mut expansions = tab.remove(&"expansions".into()).unwrap();
+        let mut expansions = tab.remove("expansions").unwrap();
         let toml_span::value::ValueInner::Array(exp) = expansions.take() else {
             unreachable!()
         };
@@ -1002,7 +978,7 @@ expansions = [
         use toml_span::Deserialize as _;
 
         let mut files = crate::diag::Files::new();
-        let cfg_id = files.add("expansions.toml", toml.into());
+        let cfg_id = files.add("expansions.toml", toml);
 
         let mut output = String::new();
 

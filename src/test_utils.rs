@@ -1,7 +1,7 @@
 use crate::{
-    cfg::ValidationContext,
-    diag::{self, CargoSpans, ErrorSink, FileId, Files, KrateSpans, PackChannel},
     CheckCtx, PathBuf,
+    cfg::ValidationContext,
+    diag::{self, ErrorSink, FileId, Files, KrateSpans, PackChannel},
 };
 
 #[derive(Default, Clone)]
@@ -117,7 +117,7 @@ impl<T> ConfigData<T>
 where
     T: toml_span::DeserializeOwned,
 {
-    pub fn load_str(name: impl Into<std::ffi::OsString>, contents: impl Into<String>) -> Self {
+    pub fn load_str(name: impl Into<crate::PathBuf>, contents: impl Into<String>) -> Self {
         let contents: String = contents.into();
 
         let res = {
@@ -200,7 +200,7 @@ pub(crate) fn write_diagnostics(
     errors: impl Iterator<Item = crate::diag::Diagnostic>,
 ) -> String {
     let mut s = codespan_reporting::term::termcolor::NoColor::new(Vec::new());
-    let config = codespan_reporting::term::Config::default();
+    let config = crate::diag::codespan_config();
 
     for diag in errors {
         codespan_reporting::term::emit(&mut s, &config, files, &diag).unwrap();
@@ -219,39 +219,36 @@ pub fn gather_diagnostics<C, VC, R>(
 where
     C: crate::UnvalidatedConfig<ValidCfg = VC>,
     VC: Send,
-    R: FnOnce(CheckCtx<'_, VC>, CargoSpans, PackChannel, &mut Files) + Send,
+    R: FnOnce(CheckCtx<'_, VC>, PackChannel) + Send,
 {
-    gather_diagnostics_with_files(krates, test_name, cfg, Files::new(), runner)
+    let ctx = setup(krates, test_name, cfg);
+    run_gather(ctx, runner)
 }
 
-pub fn gather_diagnostics_with_files<C, VC, R>(
-    krates: &crate::Krates,
+pub struct GatherCtx<'k, VC> {
+    pub krates: &'k crate::Krates,
+    pub files: crate::diag::Files,
+    pub valid_cfg: VC,
+    spans: crate::diag::KrateSpans<'k>,
+}
+
+pub fn setup<'k, C, VC>(
+    krates: &'k crate::Krates,
     test_name: &str,
     cfg: Config<C>,
-    mut files: Files,
-    runner: R,
-) -> Vec<serde_json::Value>
+) -> GatherCtx<'k, VC>
 where
     C: crate::UnvalidatedConfig<ValidCfg = VC>,
     VC: Send,
-    R: FnOnce(CheckCtx<'_, VC>, CargoSpans, PackChannel, &mut Files) + Send,
 {
-    let (spans, content, hashmap) = KrateSpans::synthesize(krates);
-
-    let spans_id = files.add(format!("{test_name}/Cargo.lock"), content);
-    let spans = KrateSpans::with_spans(spans, spans_id);
+    let mut files = crate::diag::Files::new();
+    let spans = KrateSpans::synthesize(krates, test_name, &mut files);
 
     let config = cfg.deserialized;
     let cfg_id = files.add(format!("{test_name}.toml"), cfg.config);
 
-    let mut newmap = CargoSpans::new();
-    for (key, val) in hashmap {
-        let cargo_id = files.add(val.0, val.1);
-        newmap.insert(key, (cargo_id, val.2));
-    }
-
     let mut cfg_diags = Vec::new();
-    let cfg = config.validate(crate::cfg::ValidationContext {
+    let valid_cfg = config.validate(crate::cfg::ValidationContext {
         cfg_id,
         files: &mut files,
         diagnostics: &mut cfg_diags,
@@ -264,28 +261,52 @@ where
         panic!("encountered errors validating config: {cfg_diags:#?}");
     }
 
+    GatherCtx {
+        krates,
+        files,
+        valid_cfg,
+        spans,
+    }
+}
+
+pub fn run_gather<VC, R>(ctx: GatherCtx<'_, VC>, runner: R) -> Vec<serde_json::Value>
+where
+    VC: Send,
+    R: FnOnce(CheckCtx<'_, VC>, PackChannel) + Send,
+{
     let (tx, rx) = crossbeam::channel::unbounded();
 
-    let grapher = diag::InclusionGrapher::new(krates);
+    let grapher = diag::InclusionGrapher::new(ctx.krates);
 
     let (_, gathered) = rayon::join(
         || {
-            let ctx = crate::CheckCtx {
-                krates,
-                krate_spans: &spans,
-                cfg,
+            let cctx = crate::CheckCtx {
+                krates: ctx.krates,
+                krate_spans: &ctx.spans,
+                cfg: ctx.valid_cfg,
                 serialize_extra: true,
                 colorize: false,
                 log_level: log::LevelFilter::Info,
+                files: &ctx.files,
             };
-            runner(ctx, newmap, tx, &mut files);
+            runner(cctx, tx);
         },
         || {
             let mut diagnostics = Vec::new();
 
-            const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+            let default = if std::env::var_os("CI").is_some() {
+                60
+            } else {
+                30
+            };
 
-            let trx = crossbeam::channel::after(TIMEOUT);
+            let timeout = std::env::var("CARGO_DENY_TEST_TIMEOUT_SECS")
+                .ok()
+                .and_then(|ts| ts.parse().ok())
+                .unwrap_or(default);
+            let timeout = std::time::Duration::from_secs(timeout);
+
+            let trx = crossbeam::channel::after(timeout);
             loop {
                 crossbeam::select! {
                     recv(rx) -> msg => {
@@ -297,7 +318,7 @@ where
                         }
                     }
                     recv(trx) -> _ => {
-                        anyhow::bail!("Timed out after {TIMEOUT:?}");
+                        anyhow::bail!("Timed out after {timeout:?}");
                     }
                 }
             }
@@ -309,7 +330,7 @@ where
     gathered
         .unwrap()
         .into_iter()
-        .map(|d| diag::diag_to_json(d, &files, Some(&grapher)))
+        .map(|d| diag::diag_to_json(d, &ctx.files, Some(&grapher)))
         .collect()
 }
 
@@ -364,8 +385,8 @@ pub fn gather_bans(
     let krates = kg.gather();
     let cfg = cfg.into();
 
-    gather_diagnostics::<crate::bans::cfg::Config, _, _>(&krates, name, cfg, |ctx, cs, tx, _| {
-        crate::bans::check(ctx, None, cs, tx);
+    gather_diagnostics::<crate::bans::cfg::Config, _, _>(&krates, name, cfg, |ctx, tx| {
+        crate::bans::check(ctx, None, tx);
     })
 }
 
@@ -379,11 +400,10 @@ pub fn gather_bans_with_overrides(
     let krates = kg.gather();
     let cfg = cfg.into();
 
-    gather_diagnostics::<crate::bans::cfg::Config, _, _>(&krates, name, cfg, |ctx, cs, tx, _| {
+    gather_diagnostics::<crate::bans::cfg::Config, _, _>(&krates, name, cfg, |ctx, tx| {
         crate::bans::check(
             ctx,
             None,
-            cs,
             ErrorSink {
                 overrides: Some(std::sync::Arc::new(overrides)),
                 channel: tx,

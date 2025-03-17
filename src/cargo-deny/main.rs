@@ -79,25 +79,32 @@ pub(crate) struct GraphContext {
     /// Space or comma separated list of features to activate
     #[arg(long, value_delimiter = ',')]
     pub(crate) features: Vec<String>,
-    /// Require Cargo.lock and cache are up to date
+    /// Equivalent to specifying both `--locked` and `--offline`
     #[arg(long)]
     pub(crate) frozen: bool,
-    /// Require Cargo.lock is up to date
-    #[arg(long)]
-    pub(crate) locked: bool,
     /// Run without accessing the network.
     ///
     /// If used with the `check` subcommand, this disables advisory database
     /// fetching
     #[arg(long)]
     pub(crate) offline: bool,
+    /// Assert that `Cargo.lock` will remain unchanged
+    #[arg(long)]
+    pub(crate) locked: bool,
     /// If set, the crates.io git index is initialized for use in fetching crate information, otherwise it is enabled
     /// only if using a cargo < 1.70.0 without the sparse protocol enabled
     #[arg(long)]
     pub(crate) allow_git_index: bool,
-    #[arg(long)]
     /// If set, excludes all dev-dependencies, not just ones for non-workspace crates
+    #[arg(long)]
     pub(crate) exclude_dev: bool,
+    /// If set, exclude unpublished workspace members from graph roots.
+    ///
+    /// Workspace members are considered unpublished if they they are explicitly marked with `publish = false`.
+    /// Note that the excluded workspace members are still used for the initial dependency resolution by cargo,
+    /// which might affect the exact version of used dependencies.
+    #[arg(long)]
+    pub(crate) exclude_unpublished: bool,
 }
 
 /// Lints your project's crate graph
@@ -226,16 +233,11 @@ fn setup_logger(
 }
 
 fn real_main() -> Result<(), Error> {
-    let args =
-        Opts::parse_from({
-            std::env::args().enumerate().filter_map(|(i, a)| {
-                if i == 1 && a == "deny" {
-                    None
-                } else {
-                    Some(a)
-                }
-            })
-        });
+    let args = Opts::parse_from({
+        std::env::args()
+            .enumerate()
+            .filter_map(|(i, a)| if i == 1 && a == "deny" { None } else { Some(a) })
+    });
 
     let log_level = args.log_level;
 
@@ -295,8 +297,8 @@ fn real_main() -> Result<(), Error> {
         frozen: args.ctx.frozen,
         locked: args.ctx.locked,
         offline: args.ctx.offline,
-        allow_git_index: args.ctx.allow_git_index,
         exclude_dev: args.ctx.exclude_dev,
+        exclude_unpublished: args.ctx.exclude_unpublished,
     };
 
     let log_ctx = crate::common::LogContext {
@@ -324,7 +326,9 @@ fn real_main() -> Result<(), Error> {
             let show_stats = cargs.show_stats;
 
             if args.ctx.offline {
-                log::info!("network access disabled via --offline flag, disabling advisory database fetching");
+                log::info!(
+                    "network access disabled via --offline flag, disabling advisory database fetching"
+                );
                 cargs.disable_fetch = true;
             }
 
@@ -388,14 +392,19 @@ mod test {
         // get the long help text for the command
         let mut buffer = Vec::new();
         app.write_long_help(&mut buffer).unwrap();
-        let help_text = std::str::from_utf8(&buffer).unwrap();
+        let content = std::str::from_utf8(&buffer).unwrap();
+
+        let snapshot = insta::_macro_support::SnapshotValue::FileText {
+            name: Some(cmd_name.as_str().into()),
+            content,
+        };
 
         // use internal `insta` function instead of the macro so we can pass in the
         // right module information from the crate and to gather up the errors instead of panicking directly on failures
+        #[allow(clippy::disallowed_types)]
         insta::_macro_support::assert_snapshot(
-            cmd_name.clone().into(),
-            help_text,
-            env!("CARGO_MANIFEST_DIR"),
+            snapshot,
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
             "cli-cmd",
             module_path!(),
             file!(),

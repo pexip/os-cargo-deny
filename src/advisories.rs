@@ -2,7 +2,7 @@ pub mod cfg;
 pub(crate) mod diags;
 mod helpers;
 
-use crate::{diag, LintLevel};
+use crate::{LintLevel, diag};
 pub use diags::Code;
 pub use helpers::{
     db::{AdvisoryDb, DbSet, Fetch, Id, Report},
@@ -73,11 +73,57 @@ pub fn check<R, S>(
     let mut ignore_hits: BitVec = BitVec::repeat(false, ctx.cfg.ignore.len());
     let mut ignore_yanked_hits: BitVec = BitVec::repeat(false, ctx.cfg.ignore_yanked.len());
 
+    use crate::cfg::Scope;
+    let ws_set = if matches!(
+        ctx.cfg.unmaintained.value,
+        Scope::Workspace | Scope::Transitive
+    ) {
+        ctx.krates
+            .workspace_members()
+            .filter_map(|wm| {
+                if let krates::Node::Krate { id, .. } = wm {
+                    Some(id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+    } else {
+        Default::default()
+    };
+
     // Emit diagnostics for any advisories found that matched crates in the graph
-    for (krate, krate_index, advisory) in &report.advisories {
+    'lup: for (krate, advisory) in &report.advisories {
+        'block: {
+            if advisory
+                .metadata
+                .informational
+                .as_ref()
+                .is_some_and(|info| info.is_unmaintained())
+            {
+                match ctx.cfg.unmaintained.value {
+                    Scope::All => break 'block,
+                    Scope::None => continue 'lup,
+                    Scope::Workspace | Scope::Transitive => {
+                        let nid = ctx.krates.nid_for_kid(&krate.id).unwrap();
+                        let dds = ctx.krates.direct_dependents(nid);
+
+                        let transitive = ctx.cfg.unmaintained.value == Scope::Transitive;
+                        if dds
+                            .iter()
+                            .any(|dd| ws_set.contains(&dd.krate.id) ^ transitive)
+                        {
+                            break 'block;
+                        }
+
+                        continue 'lup;
+                    }
+                }
+            }
+        }
+
         let diag = ctx.diag_for_advisory(
             krate,
-            *krate_index,
             &advisory.metadata,
             Some(&advisory.versions),
             |index| {
@@ -89,14 +135,9 @@ pub fn check<R, S>(
     }
 
     for (krate, status) in yanked {
-        let Some(ind) = ctx.krates.nid_for_kid(&krate.id) else {
-            log::warn!("failed to locate node id for '{krate}'");
-            continue;
-        };
-
         if let Some(e) = status {
             if ctx.cfg.yanked.value != LintLevel::Allow {
-                sink.push(ctx.diag_for_index_failure(krate, ind, e));
+                sink.push(ctx.diag_for_index_failure(krate, e));
             }
         } else {
             // Check to see if the user has added an ignore for the yanked
@@ -113,7 +154,7 @@ pub fn check<R, S>(
                 sink.push(ctx.diag_for_yanked_ignore(krate, i));
                 ignore_yanked_hits.as_mut_bitslice().set(i, true);
             } else {
-                sink.push(ctx.diag_for_yanked(krate, ind));
+                sink.push(ctx.diag_for_yanked(krate));
             }
         }
     }

@@ -1,9 +1,9 @@
 use crate::{
+    LintLevel, Spanned,
     cfg::{PackageSpec, PackageSpecOrExtended, Reason, ValidationContext},
     diag::{Diagnostic, FileId, Label},
-    LintLevel, Spanned,
 };
-use toml_span::{de_helpers::TableHelper, value::Value, DeserError, Deserialize};
+use toml_span::{DeserError, Deserialize, de_helpers::TableHelper, value::Value};
 
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub struct CrateBanExtended {
@@ -329,10 +329,40 @@ pub type CrateAllow = PackageSpecOrExtended<Reason>;
 pub type CrateSkip = PackageSpecOrExtended<Reason>;
 pub type TreeSkip = PackageSpecOrExtended<TreeSkipExtended>;
 
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct WorkspaceDepsConfig {
+    /// How to handle workspace dependencies on the same crate that aren't declared
+    /// in `[workspace.dependencies]`
+    pub duplicates: LintLevel,
+    /// Whether path dependencies are treated as duplicates
+    pub include_path_dependencies: bool,
+    /// How to handle [`workspace.dependencies`] that are not used
+    pub unused: LintLevel,
+}
+
+impl<'de> Deserialize<'de> for WorkspaceDepsConfig {
+    fn deserialize(value: &mut Value<'de>) -> Result<Self, DeserError> {
+        let mut th = TableHelper::new(value)?;
+
+        let duplicates = th.optional("duplicates").unwrap_or(LintLevel::Deny);
+        let include_path_dependencies = th.optional("include-path-dependencies").unwrap_or(true);
+        let unused = th.optional("unused").unwrap_or(LintLevel::Deny);
+
+        th.finalize(None)?;
+
+        Ok(Self {
+            duplicates,
+            include_path_dependencies,
+            unused,
+        })
+    }
+}
+
 pub struct Config {
     /// How to handle multiple versions of the same crate
     pub multiple_versions: LintLevel,
     pub multiple_versions_include_dev: bool,
+    pub workspace_dependencies: Option<WorkspaceDepsConfig>,
     /// How the duplicate graphs are highlighted
     pub highlight: GraphHighlight,
     /// The crates that will cause us to emit failures
@@ -373,6 +403,7 @@ impl Default for Config {
         Self {
             multiple_versions: LintLevel::Warn,
             multiple_versions_include_dev: false,
+            workspace_dependencies: None,
             highlight: GraphHighlight::All,
             deny: Vec::new(),
             allow: Vec::new(),
@@ -410,11 +441,14 @@ impl<'de> Deserialize<'de> for Config {
         let allow_build_scripts = th.optional("allow-build-scripts");
         let build = th.optional("build");
 
+        let workspace_dependencies = th.optional("workspace-dependencies");
+
         th.finalize(None)?;
 
         Ok(Self {
             multiple_versions,
             multiple_versions_include_dev,
+            workspace_dependencies,
             highlight,
             deny,
             allow,
@@ -465,7 +499,7 @@ impl crate::cfg::UnvalidatedConfig for Config {
                         }
                     }
 
-                    if dmv.map_or(false, |d| d.value) {
+                    if dmv.is_some_and(|d| d.value) {
                         dmulti.push(spec);
                         continue;
                     }
@@ -556,7 +590,7 @@ impl crate::cfg::UnvalidatedConfig for Config {
                         deny: cf.deny,
                         exact: cf.exact,
                     },
-                    reason: cf.reason.map(Reason::from),
+                    reason: cf.reason,
                 }
             })
             .collect();
@@ -571,8 +605,10 @@ impl crate::cfg::UnvalidatedConfig for Config {
                         ctx.diagnostics.push(
                             Diagnostic::error()
                                 .with_message("non-ascii file extension provided")
-                                .with_labels(vec![Label::primary(ctx.cfg_id, ext.span)
-                                    .with_message("invalid extension")]),
+                                .with_labels(vec![
+                                    Label::primary(ctx.cfg_id, ext.span)
+                                        .with_message("invalid extension"),
+                                ]),
                         );
                         continue;
                     }
@@ -601,8 +637,10 @@ impl crate::cfg::UnvalidatedConfig for Config {
                             ctx.diagnostics.push(
                                 Diagnostic::error()
                                     .with_message(format!("invalid glob pattern: {err}"))
-                                    .with_labels(vec![Label::primary(ctx.cfg_id, ext.span)
-                                        .with_message("extension")]),
+                                    .with_labels(vec![
+                                        Label::primary(ctx.cfg_id, ext.span)
+                                            .with_message("extension"),
+                                    ]),
                             );
                         }
                     }
@@ -722,6 +760,7 @@ impl crate::cfg::UnvalidatedConfig for Config {
             file_id: ctx.cfg_id,
             multiple_versions: self.multiple_versions,
             multiple_versions_include_dev: self.multiple_versions_include_dev,
+            workspace_dependencies: self.workspace_dependencies,
             highlight: self.highlight,
             denied,
             denied_multiple_versions,
@@ -894,6 +933,7 @@ pub struct ValidConfig {
     pub file_id: FileId,
     pub multiple_versions: LintLevel,
     pub multiple_versions_include_dev: bool,
+    pub workspace_dependencies: Option<WorkspaceDepsConfig>,
     pub highlight: GraphHighlight,
     pub(crate) denied: Vec<ValidKrateBan>,
     pub(crate) denied_multiple_versions: Vec<PackageSpec>,

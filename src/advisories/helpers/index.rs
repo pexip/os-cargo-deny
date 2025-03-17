@@ -1,7 +1,7 @@
 use crate::{Krate, Krates, Source};
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use std::collections::BTreeMap;
-use tame_index::{index::ComboIndexCache, Error, IndexLocation, IndexUrl};
+use tame_index::{Error, IndexLocation, IndexUrl, index::ComboIndexCache};
 
 type YankMap = Vec<(semver::Version, bool)>;
 
@@ -12,13 +12,13 @@ pub enum Entry {
 }
 
 pub struct Indices<'k> {
-    pub indices: Vec<(&'k Source, Result<ComboIndexCache, Error>)>,
+    pub indices: Vec<(&'k Source, Result<Option<ComboIndexCache>, Error>)>,
     pub cache: BTreeMap<(&'k str, &'k Source), Entry>,
 }
 
 impl<'k> Indices<'k> {
     pub fn load(krates: &'k Krates, cargo_home: crate::PathBuf) -> Self {
-        let mut indices = Vec::<(&Source, Result<ComboIndexCache, Error>)>::new();
+        let mut indices = Vec::<(&Source, Result<Option<ComboIndexCache>, Error>)>::new();
 
         for source in krates
             .krates()
@@ -39,7 +39,12 @@ impl<'k> Indices<'k> {
             };
 
             let index = index_url.and_then(|iu| {
+                // // If the registry has been replaced with a local registry just ignore it
+                // if matches!(&iu, IndexUrl::Local(_)) {
+                //     return Ok(None);
+                // };
                 ComboIndexCache::new(IndexLocation::new(iu).with_root(Some(cargo_home.clone())))
+                    .map(Some)
             });
 
             indices.push((source, index));
@@ -76,13 +81,13 @@ impl<'k> Indices<'k> {
         let cache = set
             .into_par_iter()
             .map(|(name, src)| {
-                let read_entry = || -> Result<YankMap, String> {
-                    match indices
+                let read_entry = || -> Result<Entry, String> {
+                    let res = match indices
                         .iter()
                         .find_map(|(url, index)| (src == *url).then_some(index))
                         .ok_or_else(|| "unable to locate index".to_owned())?
                     {
-                        Ok(index) => {
+                        Ok(Some(index)) => {
                             match index.cached_krate(
                                 name.try_into()
                                     .map_err(|e: tame_index::Error| e.to_string())?,
@@ -90,25 +95,24 @@ impl<'k> Indices<'k> {
                             ) {
                                 Ok(Some(ik)) => {
                                     let yank_map = Self::load_index_krate(ik);
-                                    Ok(yank_map)
+                                    Entry::Map(yank_map)
                                 }
-                                Ok(None) => {
-                                    Err("unable to locate index entry for crate".to_owned())
-                                }
-                                Err(err) => Err(format!("{err:#}")),
+                                Ok(None) => Entry::Error(
+                                    "unable to locate index entry for crate".to_owned(),
+                                ),
+                                Err(err) => Entry::Error(format!("{err:#}")),
                             }
                         }
-                        Err(err) => Err(format!("{err:#}")),
-                    }
+                        Ok(None) => {
+                            Entry::Error("unable to locate index entry for crate".to_owned())
+                        }
+                        Err(err) => Entry::Error(format!("{err:#}")),
+                    };
+
+                    Ok(res)
                 };
 
-                (
-                    (name, src),
-                    match read_entry() {
-                        Ok(ym) => Entry::Map(ym),
-                        Err(err) => Entry::Error(err),
-                    },
-                )
+                ((name, src), read_entry().unwrap_or_else(Entry::Error))
             })
             .collect();
 

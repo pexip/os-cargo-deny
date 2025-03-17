@@ -1,22 +1,35 @@
 use cargo_deny::{
-    diag, field_eq, func_name,
+    Krates, diag, field_eq, func_name,
     licenses::{self, cfg::Config},
-    test_utils as tu, Krates,
+    test_utils as tu,
 };
-use parking_lot::Once;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
-static mut STORE: Option<Arc<licenses::LicenseStore>> = None;
-static INIT: Once = Once::new();
+static STORE: OnceLock<Arc<licenses::LicenseStore>> = OnceLock::new();
 
+#[inline]
 fn store() -> Arc<licenses::LicenseStore> {
-    #[allow(unsafe_code)]
-    unsafe {
-        INIT.call_once(|| {
-            STORE = Some(Arc::new(licenses::LicenseStore::from_cache().unwrap()));
-        });
-        STORE.as_ref().unwrap().clone()
-    }
+    STORE
+        .get_or_init(|| Arc::new(licenses::LicenseStore::from_cache().unwrap()))
+        .clone()
+}
+
+fn setup<'k>(
+    krates: &'k crate::Krates,
+    name: &str,
+    cfg: tu::Config<Config>,
+) -> (
+    tu::GatherCtx<'k, licenses::cfg::ValidConfig>,
+    licenses::Summary<'k>,
+) {
+    let mut ctx = tu::setup(krates, name, cfg);
+
+    let gatherer = licenses::Gatherer::default()
+        .with_store(store())
+        .with_confidence_threshold(0.8);
+
+    let summary = gatherer.gather(ctx.krates, &mut ctx.files, Some(&ctx.valid_cfg));
+    (ctx, summary)
 }
 
 #[inline]
@@ -34,29 +47,18 @@ pub fn gather_licenses_with_overrides(
         .build_with_metadata(md, krates::NoneFilter)
         .unwrap();
 
-    let gatherer = licenses::Gatherer::default()
-        .with_store(store())
-        .with_confidence_threshold(0.8);
+    let (ctx, summary) = setup(&krates, name, cfg.into());
 
-    let cfg = cfg.into();
-
-    tu::gather_diagnostics_with_files::<Config, _, _>(
-        &krates,
-        name,
-        cfg,
-        codespan::Files::new(),
-        |ctx, _cs, tx, files| {
-            let summary = gatherer.gather(ctx.krates, files, Some(&ctx.cfg));
-            crate::licenses::check(
-                ctx,
-                summary,
-                diag::ErrorSink {
-                    overrides: overrides.map(Arc::new),
-                    channel: tx,
-                },
-            );
-        },
-    )
+    tu::run_gather(ctx, |ctx, tx| {
+        crate::licenses::check(
+            ctx,
+            summary,
+            diag::ErrorSink {
+                overrides: overrides.map(Arc::new),
+                channel: tx,
+            },
+        );
+    })
 }
 
 #[test]
@@ -99,21 +101,18 @@ fn accepts_exceptions() {
 
 #[test]
 fn detects_unlicensed() {
-    let cfg = tu::Config::new("unlicensed = 'warn'");
+    let cfg = tu::Config::new("");
 
     let mut diags = gather_licenses_with_overrides(func_name!(), cfg, None);
 
-    diags.retain(|d| field_eq!(d, "/fields/severity", "warning"));
+    diags.retain(|d| field_eq!(d, "/fields/code", "unlicensed"));
 
     insta::assert_json_snapshot!(diags);
 }
 
 #[test]
 fn flags_unencountered_licenses() {
-    let cfg = tu::Config::new(
-        "allow = ['Aladdin', 'MIT']
-    unlicensed = 'allow'",
-    );
+    let cfg = tu::Config::new("allow = ['Aladdin', 'MIT']");
 
     // Override the warning to be a failure
     let overrides = cargo_deny::overrides! {
@@ -122,7 +121,7 @@ fn flags_unencountered_licenses() {
 
     let mut diags = gather_licenses_with_overrides(func_name!(), cfg, Some(overrides));
 
-    diags.retain(|d| field_eq!(d, "/fields/severity", "error"));
+    diags.retain(|d| field_eq!(d, "/fields/code", "license-not-encountered"));
 
     insta::assert_json_snapshot!(diags);
 }
@@ -131,7 +130,6 @@ fn flags_unencountered_licenses() {
 fn flags_unencountered_exceptions() {
     let cfg = tu::Config::new(
         "allow = ['MIT']
-    unlicensed = 'allow'
     exceptions = [{name='bippity-boppity-boop', allow = ['Aladdin']}]",
     );
 
@@ -142,7 +140,7 @@ fn flags_unencountered_exceptions() {
 
     let mut diags = gather_licenses_with_overrides(func_name!(), cfg, Some(overrides));
 
-    diags.retain(|d| field_eq!(d, "/fields/severity", "error"));
+    diags.retain(|d| field_eq!(d, "/fields/code", "license-exception-not-encountered"));
 
     insta::assert_json_snapshot!(diags);
 }
@@ -158,32 +156,20 @@ fn lax_fallback() {
         .build(cmd, krates::NoneFilter)
         .unwrap();
 
-    let gatherer = licenses::Gatherer::default()
-        .with_store(store())
-        .with_confidence_threshold(0.8);
+    let cfg = tu::Config::<Config>::new("allow = ['GPL-2.0', 'LGPL-3.0']");
 
-    let cfg = tu::Config::<Config>::new(
-        "allow = ['GPL-2.0', 'LGPL-3.0']
-    unlicensed = 'deny'",
-    );
+    let (ctx, summary) = setup(&krates, func_name!(), cfg);
 
-    let diags = tu::gather_diagnostics_with_files::<Config, _, _>(
-        &krates,
-        "lax_fallback",
-        cfg,
-        codespan::Files::new(),
-        |ctx, _cs, tx, files| {
-            let summary = gatherer.gather(ctx.krates, files, Some(&ctx.cfg));
-            crate::licenses::check(
-                ctx,
-                summary,
-                diag::ErrorSink {
-                    overrides: None,
-                    channel: tx,
-                },
-            );
-        },
-    );
+    let diags = tu::run_gather(ctx, |ctx, tx| {
+        crate::licenses::check(
+            ctx,
+            summary,
+            diag::ErrorSink {
+                overrides: None,
+                channel: tx,
+            },
+        );
+    });
 
     insta::assert_json_snapshot!(diags);
 }
@@ -197,10 +183,6 @@ fn clarifications() {
     let krates: Krates = krates::Builder::new()
         .build(cmd, krates::NoneFilter)
         .unwrap();
-
-    let gatherer = licenses::Gatherer::default()
-        .with_store(store())
-        .with_confidence_threshold(0.8);
 
     let cfg = tu::Config::<Config>::new(
         r#"
@@ -233,23 +215,18 @@ license-files = [
 "#,
     );
 
-    let diags = tu::gather_diagnostics_with_files::<Config, _, _>(
-        &krates,
-        "clarifications",
-        cfg,
-        codespan::Files::new(),
-        |ctx, _cs, tx, files| {
-            let summary = gatherer.gather(ctx.krates, files, Some(&ctx.cfg));
-            crate::licenses::check(
-                ctx,
-                summary,
-                diag::ErrorSink {
-                    overrides: None,
-                    channel: tx,
-                },
-            );
-        },
-    );
+    let (ctx, summary) = setup(&krates, func_name!(), cfg);
+
+    let diags = tu::run_gather(ctx, |ctx, tx| {
+        crate::licenses::check(
+            ctx,
+            summary,
+            diag::ErrorSink {
+                overrides: None,
+                channel: tx,
+            },
+        );
+    });
 
     insta::assert_json_snapshot!(diags);
 }
@@ -257,11 +234,10 @@ license-files = [
 #[test]
 fn handles_dev_dependencies() {
     let cfg = tu::Config::new(
-        r#"
+        r"
 allow = ['Apache-2.0']
-deny = ['GPL-3.0']
 include-dev = true
-"#,
+",
     );
 
     let mut diags = gather_licenses_with_overrides(func_name!(), cfg, None);
@@ -285,33 +261,24 @@ fn forces_apache_over_pixar() {
         .build(cmd, krates::NoneFilter)
         .unwrap();
 
-    let gatherer = licenses::Gatherer::default()
-        .with_store(store())
-        .with_confidence_threshold(0.8);
-
     let cfg = tu::Config::new(
-        r#"
+        r"
     allow = ['Apache-2.0']
-    "#,
+    ",
     );
 
-    let diags = tu::gather_diagnostics_with_files::<Config, _, _>(
-        &krates,
-        func_name!(),
-        cfg,
-        codespan::Files::new(),
-        |ctx, _cs, tx, files| {
-            let summary = gatherer.gather(ctx.krates, files, Some(&ctx.cfg));
-            crate::licenses::check(
-                ctx,
-                summary,
-                diag::ErrorSink {
-                    overrides: None,
-                    channel: tx,
-                },
-            );
-        },
-    );
+    let (ctx, summary) = setup(&krates, func_name!(), cfg);
+
+    let diags = tu::run_gather(ctx, |ctx, tx| {
+        crate::licenses::check(
+            ctx,
+            summary,
+            diag::ErrorSink {
+                overrides: None,
+                channel: tx,
+            },
+        );
+    });
 
     insta::assert_json_snapshot!(diags);
 }

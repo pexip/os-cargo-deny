@@ -46,6 +46,7 @@ pub(crate) fn print_stats(
                 write_min_stats(&mut summary, &stats, color);
             }
 
+            #[allow(clippy::disallowed_macros)]
             if !summary.is_empty() {
                 print!("{summary}");
             }
@@ -76,7 +77,7 @@ fn stats_to_exit_code(stats: AllStats) -> Option<i32> {
         .into_iter()
         .enumerate()
         .fold(0, |mut acc, (i, stats)| {
-            if stats.map_or(false, |s| s.errors > 0) {
+            if stats.is_some_and(|s| s.errors > 0) {
                 acc |= 1 << i;
             }
             acc
@@ -196,7 +197,7 @@ fn write_full_stats(summary: &mut String, stats: &AllStats, color: bool) {
 
 #[cfg(test)]
 mod test {
-    use super::{stats_to_exit_code as ec, AllStats, Stats};
+    use super::{AllStats, Stats, stats_to_exit_code as ec};
 
     #[test]
     fn exit_code() {

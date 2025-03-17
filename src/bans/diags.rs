@@ -1,11 +1,11 @@
 use std::fmt;
 
 use crate::{
-    bans::{cfg, SpecAndReason},
+    Krate, Spanned,
+    bans::{SpecAndReason, cfg},
     diag::{
         CfgCoord, Check, Diag, Diagnostic, FileId, GraphNode, KrateCoord, Label, Pack, Severity,
     },
-    Krate, Spanned,
 };
 
 #[derive(
@@ -28,6 +28,7 @@ pub enum Code {
     Skipped,
     Wildcard,
     UnmatchedSkip,
+    UnnecessarySkip,
     AllowedByWrapper,
     UnmatchedWrapper,
     SkippedByRoot,
@@ -51,6 +52,9 @@ pub enum Code {
     UnmatchedPathBypass,
     UnmatchedGlob,
     UnusedWrapper,
+    WorkspaceDuplicate,
+    UnresolvedWorkspaceDependency,
+    UnusedWorkspaceDependency,
 }
 
 impl From<Code> for String {
@@ -142,10 +146,9 @@ impl<'a> From<Duplicates<'a>> for Diag {
                 dup.num_dupes, dup.krate_name,
             ))
             .with_code(Code::Duplicate)
-            .with_labels(vec![dup
-                .krates_coord
-                .into_label()
-                .with_message("lock entries")])
+            .with_labels(vec![
+                dup.krates_coord.into_label().with_message("lock entries"),
+            ])
             .into()
     }
 }
@@ -171,24 +174,13 @@ impl<'a> From<Skipped<'a>> for Diag {
 pub(crate) struct Wildcards<'a> {
     pub(crate) krate: &'a Krate,
     pub(crate) severity: Severity,
-    pub(crate) wildcards: Vec<&'a krates::cm::Dependency>,
+    pub(crate) labels: Vec<Label>,
     pub(crate) allow_wildcard_paths: bool,
-    pub(crate) cargo_spans: &'a crate::diag::CargoSpans,
 }
 
 impl<'a> From<Wildcards<'a>> for Pack {
     fn from(wc: Wildcards<'a>) -> Self {
-        let (file_id, map) = &wc.cargo_spans[&wc.krate.id];
-
-        let labels: Vec<_> = wc
-            .wildcards
-            .into_iter()
-            .map(|dep| {
-                Label::primary(*file_id, map[&dep.name].clone())
-                    .with_message("wildcard crate entry")
-            })
-            .collect();
-
+        let labels = wc.labels;
         let diag = Diag::new(
             Diagnostic::new(wc.severity)
                 .with_message(format!(
@@ -230,6 +222,26 @@ impl<'a> From<UnmatchedSkip<'a>> for Diag {
     }
 }
 
+pub(crate) struct UnnecessarySkip<'a> {
+    pub(crate) skip_cfg: &'a SpecAndReason,
+}
+
+impl<'a> From<UnnecessarySkip<'a>> for Diag {
+    fn from(us: UnnecessarySkip<'a>) -> Self {
+        Diagnostic::new(Severity::Warning)
+            .with_message(format!(
+                "skip '{}' applied to a crate with only one version",
+                us.skip_cfg.spec,
+            ))
+            .with_code(Code::UnnecessarySkip)
+            .with_labels(
+                us.skip_cfg
+                    .to_labels(Some("unnecessary skip configuration")),
+            )
+            .into()
+    }
+}
+
 pub(crate) struct UnusedWrapper {
     pub(crate) wrapper_cfg: CfgCoord,
 }
@@ -239,10 +251,11 @@ impl From<UnusedWrapper> for Diag {
         Diagnostic::new(Severity::Warning)
             .with_message("wrapper for banned crate was not encountered")
             .with_code(Code::UnusedWrapper)
-            .with_labels(vec![us
-                .wrapper_cfg
-                .into_label()
-                .with_message("unmatched wrapper")])
+            .with_labels(vec![
+                us.wrapper_cfg
+                    .into_label()
+                    .with_message("unmatched wrapper"),
+            ])
             .into()
     }
 }
@@ -315,10 +328,11 @@ impl From<UnmatchedSkipRoot> for Diag {
         Diagnostic::new(Severity::Warning)
             .with_message("skip tree root was not found in the dependency graph")
             .with_code(Code::UnmatchedSkipRoot)
-            .with_labels(vec![usr
-                .skip_root_cfg
-                .into_label()
-                .with_message("no crate matched these criteria")])
+            .with_labels(vec![
+                usr.skip_root_cfg
+                    .into_label()
+                    .with_message("no crate matched these criteria"),
+            ])
             .into()
     }
 }
@@ -348,10 +362,11 @@ pub(crate) struct ExactFeaturesMismatch<'a> {
 
 impl From<ExactFeaturesMismatch<'_>> for Diag {
     fn from(efm: ExactFeaturesMismatch<'_>) -> Self {
-        let mut labels = vec![efm
-            .exact_coord
-            .into_label()
-            .with_message("exact enabled here")];
+        let mut labels = vec![
+            efm.exact_coord
+                .into_label()
+                .with_message("exact enabled here"),
+        ];
 
         labels.extend(
             efm.missing_allowed
@@ -411,10 +426,9 @@ impl From<FeatureNotExplicitlyAllowed<'_>> for Diag {
                 fna.feature, fna.krate,
             ))
             .with_code(Code::FeatureNotExplicitlyAllowed)
-            .with_labels(vec![fna
-                .allowed
-                .into_label()
-                .with_message("allowed features")]);
+            .with_labels(vec![
+                fna.allowed.into_label().with_message("allowed features"),
+            ]);
 
         Diag {
             diag,
@@ -444,7 +458,7 @@ impl From<FeatureBanned<'_>> for Diag {
             ))
             .with_code(Code::FeatureBanned)
             .with_labels(vec![
-                Label::primary(fed.file_id, fed.feature.span).with_message("feature denied here")
+                Label::primary(fed.file_id, fed.feature.span).with_message("feature denied here"),
             ]);
 
         Diag {
@@ -475,7 +489,7 @@ impl From<UnknownFeature<'_>> for Diag {
             ))
             .with_code(Code::UnknownFeature)
             .with_labels(vec![
-                Label::primary(uf.file_id, uf.feature.span).with_message("unknown feature")
+                Label::primary(uf.file_id, uf.feature.span).with_message("unknown feature"),
             ]);
 
         Diag {
@@ -506,7 +520,7 @@ impl From<DefaultFeatureEnabled<'_>> for Diag {
             ))
             .with_code(Code::DefaultFeatureEnabled)
             .with_labels(vec![
-                Label::primary(dfe.file_id, dfe.level.span).with_message("lint level")
+                Label::primary(dfe.file_id, dfe.level.span).with_message("lint level"),
             ]);
 
         Diag {
@@ -528,7 +542,7 @@ pub(crate) struct HomePath<'a> {
     pub(crate) home: Option<&'a crate::Path>,
 }
 
-impl<'a> fmt::Display for HomePath<'a> {
+impl fmt::Display for HomePath<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(rel_path) = self.home.and_then(|home| self.path.strip_prefix(home).ok()) {
             f.write_str("$CARGO_HOME/")?;
@@ -624,7 +638,7 @@ impl From<ChecksumMatch<'_>> for Diag {
             .with_notes(vec![format!("path = '{}'", cm.path)])
             .with_code(Code::ChecksumMatch)
             .with_labels(vec![
-                Label::primary(cm.file_id, cm.checksum.span).with_message("checksum")
+                Label::primary(cm.file_id, cm.checksum.span).with_message("checksum"),
             ]);
 
         Diag {
@@ -659,7 +673,7 @@ impl From<ChecksumMismatch<'_>> for Diag {
             .with_notes(notes)
             .with_code(Code::ChecksumMismatch)
             .with_labels(vec![
-                Label::primary(cm.file_id, cm.checksum.span).with_message("expected checksum")
+                Label::primary(cm.file_id, cm.checksum.span).with_message("expected checksum"),
             ]);
 
         Diag {
@@ -811,11 +825,10 @@ impl<'a> From<UnmatchedBypass<'a>> for Diag {
         Diagnostic::new(Severity::Warning)
             .with_message("crate build bypass was not encountered")
             .with_code(Code::UnmatchedBypass)
-            .with_labels(vec![Label::primary(
-                ubc.file_id,
-                ubc.unmatched.spec.name.span,
-            )
-            .with_message("unmatched bypass")])
+            .with_labels(vec![
+                Label::primary(ubc.file_id, ubc.unmatched.spec.name.span)
+                    .with_message("unmatched bypass"),
+            ])
             .into()
     }
 }
@@ -847,5 +860,101 @@ impl<'a> From<UnmatchedGlob<'a>> for Diag {
             .with_code(Code::UnmatchedGlob)
             .with_labels(vec![Label::primary(ug.file_id, ug.unmatched.span)])
             .into()
+    }
+}
+
+pub(crate) struct WorkspaceDuplicate<'k> {
+    pub(crate) duplicate: &'k Krate,
+    pub(crate) labels: Vec<Label>,
+    pub(crate) severity: crate::LintLevel,
+    pub(crate) has_workspace_declaration: bool,
+    pub(crate) total_uses: usize,
+}
+
+impl<'k> From<WorkspaceDuplicate<'k>> for Diag {
+    fn from(wd: WorkspaceDuplicate<'k>) -> Self {
+        Diagnostic::new(wd.severity.into())
+            .with_message(format!(
+                "crate {} is used {} times in the workspace, {}",
+                wd.duplicate,
+                wd.total_uses,
+                if wd.has_workspace_declaration {
+                    "but not all declarations use the shared workspace dependency"
+                } else {
+                    "and there is no shared workspace dependency for it"
+                }
+            ))
+            .with_code(Code::WorkspaceDuplicate)
+            .with_labels(wd.labels)
+            .into()
+    }
+}
+
+pub(crate) struct UnresolveWorkspaceDependency<'m, 'k> {
+    pub(crate) manifest: &'m crate::diag::Manifest<'k>,
+    pub(crate) dep: &'m crate::diag::ManifestDep<'k>,
+}
+
+#[allow(clippy::fallible_impl_from)]
+impl<'m, 'k> From<UnresolveWorkspaceDependency<'m, 'k>> for Diag {
+    fn from(uwd: UnresolveWorkspaceDependency<'m, 'k>) -> Self {
+        Diagnostic::bug()
+            .with_code(Code::UnresolvedWorkspaceDependency)
+            .with_message("failed to resolve a workspace dependency")
+            .with_labels(vec![
+                Label::primary(
+                    uwd.manifest.id,
+                    uwd.dep.workspace.as_ref().map(|ws| ws.span).unwrap(),
+                )
+                .with_message("usage of workspace dependency"),
+                Label::secondary(uwd.manifest.id, uwd.dep.value_span),
+            ])
+            .into()
+    }
+}
+
+pub(crate) struct UnusedWorkspaceDependencies<'u> {
+    pub(crate) unused: &'u [crate::diag::UnusedWorkspaceDep],
+    pub(crate) level: crate::LintLevel,
+    pub(crate) id: FileId,
+}
+
+impl<'u> From<UnusedWorkspaceDependencies<'u>> for Pack {
+    fn from(uwd: UnusedWorkspaceDependencies<'u>) -> Self {
+        let mut pack = Pack::new(Check::Bans);
+
+        for unused in uwd.unused {
+            let mut labels = vec![Label::primary(uwd.id, unused.key).with_message(format!(
+                "unused {}workspace dependency",
+                if unused.patched.is_some() {
+                    "and patched "
+                } else {
+                    ""
+                }
+            ))];
+
+            if let Some(patched) = unused.patched {
+                labels.push(
+                    Label::secondary(uwd.id, patched)
+                        .with_message("note this is the original dependency that is patched"),
+                );
+            }
+
+            if let Some(rename) = &unused.rename {
+                labels.push(
+                    Label::secondary(uwd.id, rename.span)
+                        .with_message("note the dependency is renamed"),
+                );
+            }
+
+            pack.push(
+                Diagnostic::new(uwd.level.into())
+                    .with_code(Code::UnusedWorkspaceDependency)
+                    .with_message("workspace dependency is declared, but unused")
+                    .with_labels(labels),
+            );
+        }
+
+        pack
     }
 }

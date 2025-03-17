@@ -1,5 +1,6 @@
 # Bans diagnostics
 
+<!-- markdownlint-disable-next-line heading-increment -->
 ### `banned`
 
 A crate which is [explicitly banned](cfg.md#the-allow-and-deny-fields-optional) was detected.
@@ -24,9 +25,25 @@ A crate version that matched an entry in [`bans.skip`](cfg.md#the-skip-field-opt
 
 A crate was included via a [wildcard dependency](cfg.md#the-wildcards-field-optional) by one or more crates.
 
+### `workspace-duplicate`
+
+A direct workspace dependency was referred to more than once and all declarations did not use [`workspace = true`](cfg.md#the-workspace-duplicates-field-optional)
+
+### `unresolved-workspace-dependency`
+
+We were unable to determine the exact crate a workspace dependency (or patch) was resolved to. This most likely indicates a bug in cargo-deny.
+
+### `unused-workspace-dependency`
+
+A [`[workspace.dependencies]`](https://doc.rust-lang.org/cargo/reference/workspaces.html#the-dependencies-table) was declared, but not actually used anywhere in the workspace.
+
 ### `unmatched-skip`
 
 A crate version in [`bans.skip`](cfg.md#the-skip-field-optional) was not encountered.
+
+### `unnecessary-skip`
+
+A crate specified in [`bans.skip`](cfg.md#the-skip-field-optional) was in the graph, but that crate only had one version, making the `skip` entry useless.
 
 ### `allowed-by-wrapper`
 
