@@ -83,7 +83,7 @@ impl Status {
 
     /// Returns true if this is an `abort` status.
     pub fn is_abort(&self) -> bool {
-        self.message().map_or(false, |m| m == "abort")
+        self.message() == Some("abort")
     }
 
     /// Return true if the status is explicitly set to indicated delayed output processing
@@ -104,11 +104,9 @@ impl Status {
 }
 
 ///
-#[allow(clippy::empty_docs)]
 pub mod client;
 
 ///
-#[allow(clippy::empty_docs)]
 pub mod server;
 
 type PacketlineReader<'a, T = std::process::ChildStdout> =

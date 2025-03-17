@@ -206,7 +206,7 @@ pub(crate) mod function {
                             BACKSLASH => match p.next() {
                                 Some((_, p_ch)) => {
                                     if p_ch == t_ch {
-                                        matched = true
+                                        matched = true;
                                     } else {
                                         prev_p_ch = p_ch;
                                     }
@@ -240,7 +240,7 @@ pub(crate) mod function {
                             }
                             BRACKET_OPEN if matches!(p.peek(), Some((_, COLON))) => {
                                 p.next();
-                                while p.peek().map_or(false, |t| t.1 != BRACKET_CLOSE) {
+                                while p.peek().is_some_and(|t| t.1 != BRACKET_CLOSE) {
                                     p.next();
                                 }
                                 let closing_bracket_idx = match p.next() {
@@ -252,7 +252,7 @@ pub(crate) mod function {
                                     || pattern[closing_bracket_idx - 1] != COLON
                                 {
                                     if t_ch == BRACKET_OPEN {
-                                        matched = true
+                                        matched = true;
                                     }
                                     if p_idx > pattern.len() {
                                         return AbortAll;

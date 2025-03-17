@@ -1,4 +1,4 @@
-use crate::config::tree::{Key, Mailmap};
+use crate::config::tree::Mailmap;
 use crate::Id;
 
 impl crate::Repository {
@@ -27,16 +27,12 @@ impl crate::Repository {
     pub fn open_mailmap_into(&self, target: &mut gix_mailmap::Snapshot) -> Result<(), crate::mailmap::load::Error> {
         let mut err = None::<crate::mailmap::load::Error>;
         let mut buf = Vec::new();
-        let mut blob_id = self
-            .config
-            .resolved
-            .string("mailmap", None, Mailmap::BLOB.name)
-            .and_then(|spec| {
-                self.rev_parse_single(spec.as_ref())
-                    .map_err(|e| err.get_or_insert(e.into()))
-                    .map(Id::detach)
-                    .ok()
-            });
+        let mut blob_id = self.config.resolved.string(Mailmap::BLOB).and_then(|spec| {
+            self.rev_parse_single(spec.as_ref())
+                .map_err(|e| err.get_or_insert(e.into()))
+                .map(Id::detach)
+                .ok()
+        });
         match self.work_dir() {
             None => {
                 blob_id = blob_id.or_else(|| {
@@ -72,7 +68,7 @@ impl crate::Repository {
 
         let configured_path = self
             .config_snapshot()
-            .trusted_path(Mailmap::FILE.logical_name().as_str())
+            .trusted_path(&Mailmap::FILE)
             .and_then(|res| res.map_err(|e| err.get_or_insert(e.into())).ok());
 
         if let Some(mut file) =

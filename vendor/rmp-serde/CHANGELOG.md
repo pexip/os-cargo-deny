@@ -9,6 +9,9 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - Add `UnderlyingWrite` trait for `Serializer` and its wrappers to be able to obtain the underlying writer.
 - Add missing `Debug` implementations.
 - More `decode::Error` conversions.
+- Support for serializing and deserializing 128-bit values in serde.
+- Support for serializing sequences and maps with unknown length, that enables the use of `#[serde(flatten)]` attribute (#196).
+- Depth limit is now enforced for `Deserializer`.
 
 ### Changed:
 - (Breaking) Serialize newtype structs by serializing its inner type without wrapping into a tuple.
@@ -24,6 +27,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - Fix error decoding `Some(enum)` (#185)
 - Fix error decoding unit structs which were encoded as `[]` (#181)
 - Fix `Display` implementations for errors not including all relevant information (#199)
+- Fix deserialization of nested `Option`s (#245)
 
 ## 0.13.7 - 2017-09-13
 ### Changed:
@@ -49,7 +53,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 ## 0.13.2 - 2017-04-30
 ### Changed
-- Fixed `rmps::decode::from_read` signature by marking that it can only deserialize into `DeserializeOwned`. The previous signature let try to deserialize, for example `&str` and other borrow types and it failed at runtime instead of catching it at compile time.
+- Fixed `rmp_serde::decode::from_read` signature by marking that it can only deserialize into `DeserializeOwned`. The previous signature let try to deserialize, for example `&str` and other borrow types and it failed at runtime instead of catching it at compile time.
 
 ## 0.13.1 - 2017-04-25
 ### Added

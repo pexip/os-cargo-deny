@@ -5,9 +5,9 @@ use std::str::FromStr;
 #[derive(Default, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct InternalString(Inner);
 
-#[cfg(feature = "kstring")]
+#[cfg(feature = "perf")]
 type Inner = kstring::KString;
-#[cfg(not(feature = "kstring"))]
+#[cfg(not(feature = "perf"))]
 type Inner = String;
 
 impl InternalString {
@@ -56,9 +56,9 @@ impl AsRef<str> for InternalString {
 impl From<&str> for InternalString {
     #[inline]
     fn from(s: &str) -> Self {
-        #[cfg(feature = "kstring")]
+        #[cfg(feature = "perf")]
         let inner = kstring::KString::from_ref(s);
-        #[cfg(not(feature = "kstring"))]
+        #[cfg(not(feature = "perf"))]
         let inner = String::from(s);
 
         InternalString(inner)
@@ -134,7 +134,7 @@ impl<'de> serde::Deserialize<'de> for InternalString {
 struct StringVisitor;
 
 #[cfg(feature = "serde")]
-impl<'de> serde::de::Visitor<'de> for StringVisitor {
+impl serde::de::Visitor<'_> for StringVisitor {
     type Value = InternalString;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

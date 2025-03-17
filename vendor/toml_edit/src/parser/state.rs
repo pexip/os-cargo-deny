@@ -1,11 +1,10 @@
 use crate::key::Key;
-use crate::parser::errors::CustomError;
+use crate::parser::error::CustomError;
 use crate::repr::Decor;
-use crate::table::TableKeyValue;
-use crate::{ArrayOfTables, Document, InternalString, Item, RawString, Table};
+use crate::{ArrayOfTables, ImDocument, Item, RawString, Table};
 
 pub(crate) struct ParseState {
-    document: Document,
+    root: Table,
     trailing: Option<std::ops::Range<usize>>,
     current_table_position: usize,
     current_table: Table,
@@ -14,11 +13,27 @@ pub(crate) struct ParseState {
 }
 
 impl ParseState {
-    pub(crate) fn into_document(mut self) -> Result<Document, CustomError> {
+    pub(crate) fn new() -> Self {
+        let mut root = Table::new();
+        root.span = Some(0..0);
+        Self {
+            root: Table::new(),
+            trailing: None,
+            current_table_position: 0,
+            current_table: root,
+            current_is_array: false,
+            current_table_path: Vec::new(),
+        }
+    }
+
+    pub(crate) fn into_document<S>(mut self, raw: S) -> Result<ImDocument<S>, CustomError> {
         self.finalize_table()?;
-        let trailing = self.trailing.map(RawString::with_span);
-        self.document.trailing = trailing.unwrap_or_default();
-        Ok(self.document)
+        let trailing = self.trailing.map(RawString::with_span).unwrap_or_default();
+        Ok(ImDocument {
+            root: Item::Table(self.root),
+            trailing,
+            raw,
+        })
     }
 
     pub(crate) fn on_ws(&mut self, span: std::ops::Range<usize>) {
@@ -39,30 +54,24 @@ impl ParseState {
 
     pub(crate) fn on_keyval(
         &mut self,
-        mut path: Vec<Key>,
-        mut kv: TableKeyValue,
+        path: Vec<Key>,
+        (mut key, value): (Key, Item),
     ) -> Result<(), CustomError> {
         {
             let mut prefix = self.trailing.take();
-            let first_key = if path.is_empty() {
-                &mut kv.key
-            } else {
-                &mut path[0]
-            };
             let prefix = match (
                 prefix.take(),
-                first_key.decor.prefix().and_then(|d| d.span()),
+                key.leaf_decor.prefix().and_then(|d| d.span()),
             ) {
                 (Some(p), Some(k)) => Some(p.start..k.end),
                 (Some(p), None) | (None, Some(p)) => Some(p),
                 (None, None) => None,
             };
-            first_key
-                .decor
+            key.leaf_decor
                 .set_prefix(prefix.map(RawString::with_span).unwrap_or_default());
         }
 
-        if let (Some(existing), Some(value)) = (self.current_table.span(), kv.value.span()) {
+        if let (Some(existing), Some(value)) = (self.current_table.span(), value.span()) {
             self.current_table.span = Some((existing.start)..(value.end));
         }
         let table = &mut self.current_table;
@@ -72,20 +81,19 @@ impl ParseState {
         let mixed_table_types = table.is_dotted() == path.is_empty();
         if mixed_table_types {
             return Err(CustomError::DuplicateKey {
-                key: kv.key.get().into(),
+                key: key.get().into(),
                 table: None,
             });
         }
 
-        let key: InternalString = kv.key.get_internal().into();
         match table.items.entry(key) {
             indexmap::map::Entry::Vacant(o) => {
-                o.insert(kv);
+                o.insert(value);
             }
             indexmap::map::Entry::Occupied(o) => {
                 // "Since tables cannot be defined more than once, redefining such tables using a [table] header is not allowed"
                 return Err(CustomError::DuplicateKey {
-                    key: o.key().as_str().into(),
+                    key: o.key().get().into(),
                     table: Some(self.current_table_path.clone()),
                 });
             }
@@ -105,7 +113,7 @@ impl ParseState {
         debug_assert!(self.current_table_path.is_empty());
 
         // Look up the table on start to ensure the duplicate_key error points to the right line
-        let root = self.document.as_table_mut();
+        let root = &mut self.root;
         let parent_table = Self::descend_path(root, &path[..path.len() - 1], false)?;
         let key = &path[path.len() - 1];
         let entry = parent_table
@@ -139,7 +147,7 @@ impl ParseState {
 
         // 1. Look up the table on start to ensure the duplicate_key error points to the right line
         // 2. Ensure any child tables from an implicit table are preserved
-        let root = self.document.as_table_mut();
+        let root = &mut self.root;
         let parent_table = Self::descend_path(root, &path[..path.len() - 1], false)?;
         let key = &path[path.len() - 1];
         if let Some(entry) = parent_table.remove(key.get()) {
@@ -168,7 +176,7 @@ impl ParseState {
         let mut table = std::mem::take(&mut self.current_table);
         let path = std::mem::take(&mut self.current_table_path);
 
-        let root = self.document.as_table_mut();
+        let root = &mut self.root;
         if path.is_empty() {
             assert!(root.is_empty());
             std::mem::swap(&mut table, root);
@@ -217,9 +225,9 @@ impl ParseState {
         Ok(())
     }
 
-    pub(crate) fn descend_path<'t, 'k>(
+    pub(crate) fn descend_path<'t>(
         mut table: &'t mut Table,
-        path: &'k [Key],
+        path: &[Key],
         dotted: bool,
     ) -> Result<&'t mut Table, CustomError> {
         for (i, key) in path.iter().enumerate() {
@@ -254,7 +262,7 @@ impl ParseState {
                     }
                     table = sweet_child_of_mine;
                 }
-                _ => unreachable!(),
+                Item::None => unreachable!(),
             }
         }
         Ok(table)
@@ -304,20 +312,5 @@ impl ParseState {
         )?;
 
         Ok(())
-    }
-}
-
-impl Default for ParseState {
-    fn default() -> Self {
-        let mut root = Table::new();
-        root.span = Some(0..0);
-        Self {
-            document: Document::new(),
-            trailing: None,
-            current_table_position: 0,
-            current_table: root,
-            current_is_array: false,
-            current_table_path: Vec::new(),
-        }
     }
 }

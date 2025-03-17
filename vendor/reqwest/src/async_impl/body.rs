@@ -48,6 +48,7 @@ pin_project! {
 }
 
 /// Converts any `impl Body` into a `impl Stream` of just its DATA frames.
+#[cfg(any(feature = "stream", feature = "multipart",))]
 pub(crate) struct DataStream<B>(pub(crate) B);
 
 impl Body {
@@ -88,7 +89,7 @@ impl Body {
     #[cfg_attr(docsrs, doc(cfg(feature = "stream")))]
     pub fn wrap_stream<S>(stream: S) -> Body
     where
-        S: futures_core::stream::TryStream + Send + Sync + 'static,
+        S: futures_core::stream::TryStream + Send + 'static,
         S::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
         Bytes: From<S::Ok>,
     {
@@ -98,7 +99,7 @@ impl Body {
     #[cfg(any(feature = "stream", feature = "multipart", feature = "blocking"))]
     pub(crate) fn stream<S>(stream: S) -> Body
     where
-        S: futures_core::stream::TryStream + Send + Sync + 'static,
+        S: futures_core::stream::TryStream + Send + 'static,
         S::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
         Bytes: From<S::Ok>,
     {
@@ -106,26 +107,15 @@ impl Body {
         use http_body::Frame;
         use http_body_util::StreamBody;
 
-        let body = http_body_util::BodyExt::boxed(StreamBody::new(
+        let body = http_body_util::BodyExt::boxed(StreamBody::new(sync_wrapper::SyncStream::new(
             stream
                 .map_ok(|d| Frame::data(Bytes::from(d)))
                 .map_err(Into::into),
-        ));
+        )));
         Body {
             inner: Inner::Streaming(body),
         }
     }
-
-    /*
-    #[cfg(feature = "blocking")]
-    pub(crate) fn wrap(body: hyper::Body) -> Body {
-        Body {
-            inner: Inner::Streaming {
-                body: Box::pin(WrapHyper(body)),
-            },
-        }
-    }
-    */
 
     pub(crate) fn empty() -> Body {
         Body::reusable(Bytes::new())
@@ -137,8 +127,20 @@ impl Body {
         }
     }
 
-    // pub?
-    pub(crate) fn streaming<B>(inner: B) -> Body
+    /// Wrap a [`HttpBody`] in a box inside `Body`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use reqwest::Body;
+    /// # use futures_util;
+    /// # fn main() {
+    /// let content = "hello,world!".to_string();
+    ///
+    /// let body = Body::wrap(content);
+    /// # }
+    /// ```
+    pub fn wrap<B>(inner: B) -> Body
     where
         B: HttpBody + Send + Sync + 'static,
         B::Data: Into<Bytes>,
@@ -146,10 +148,7 @@ impl Body {
     {
         use http_body_util::BodyExt;
 
-        let boxed = inner
-            .map_frame(|f| f.map_data(Into::into))
-            .map_err(Into::into)
-            .boxed();
+        let boxed = IntoBytesBody { inner }.map_err(Into::into).boxed();
 
         Body {
             inner: Inner::Streaming(boxed),
@@ -393,11 +392,25 @@ where
 pub(crate) type ResponseBody =
     http_body_util::combinators::BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>;
 
-pub(crate) fn response(
-    body: hyper::body::Incoming,
+pub(crate) fn boxed<B>(body: B) -> ResponseBody
+where
+    B: hyper::body::Body<Data = Bytes> + Send + Sync + 'static,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    use http_body_util::BodyExt;
+
+    body.map_err(box_err).boxed()
+}
+
+pub(crate) fn response<B>(
+    body: B,
     deadline: Option<Pin<Box<Sleep>>>,
     read_timeout: Option<Duration>,
-) -> ResponseBody {
+) -> ResponseBody
+where
+    B: hyper::body::Body<Data = Bytes> + Send + Sync + 'static,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
     use http_body_util::BodyExt;
 
     match (deadline, read_timeout) {
@@ -420,6 +433,7 @@ where
 
 // ===== impl DataStream =====
 
+#[cfg(any(feature = "stream", feature = "multipart",))]
 impl<B> futures_core::Stream for DataStream<B>
 where
     B: HttpBody<Data = Bytes> + Unpin,
@@ -441,6 +455,47 @@ where
                 None => Poll::Ready(None),
             };
         }
+    }
+}
+
+// ===== impl IntoBytesBody =====
+
+pin_project! {
+    struct IntoBytesBody<B> {
+        #[pin]
+        inner: B,
+    }
+}
+
+// We can't use `map_frame()` because that loses the hint data (for good reason).
+// But we aren't transforming the data.
+impl<B> hyper::body::Body for IntoBytesBody<B>
+where
+    B: hyper::body::Body,
+    B::Data: Into<Bytes>,
+{
+    type Data = Bytes;
+    type Error = B::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context,
+    ) -> Poll<Option<Result<hyper::body::Frame<Self::Data>, Self::Error>>> {
+        match futures_core::ready!(self.project().inner.poll_frame(cx)) {
+            Some(Ok(f)) => Poll::Ready(Some(Ok(f.map_data(Into::into)))),
+            Some(Err(e)) => Poll::Ready(Some(Err(e))),
+            None => Poll::Ready(None),
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.inner.size_hint()
+    }
+
+    #[inline]
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
     }
 }
 
@@ -467,8 +522,9 @@ mod tests {
         assert!(!bytes_body.is_end_stream());
         assert_eq!(bytes_body.size_hint().exact(), Some(3));
 
-        let stream_body = Body::streaming(bytes_body);
-        assert!(!stream_body.is_end_stream());
-        assert_eq!(stream_body.size_hint().exact(), None);
+        // can delegate even when wrapped
+        let stream_body = Body::wrap(empty_body);
+        assert!(stream_body.is_end_stream());
+        assert_eq!(stream_body.size_hint().exact(), Some(0));
     }
 }

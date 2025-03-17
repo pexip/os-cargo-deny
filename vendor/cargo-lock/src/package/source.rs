@@ -74,6 +74,36 @@ impl SourceId {
         })
     }
 
+    /// SourceIds with git references used in package.source fields are subtly
+    /// different than those in parenthesized source URLs that appear in disambiguated
+    /// entries of package.dependencies: the former have the form ?rev=ABBREV#FULLHASH
+    /// whereas the latter have the form ?rev=FULLHASH. This method changes the former
+    /// into the latter, and is used in `impl From<&Package> for Dependency`.
+    pub fn normalize_git_source_for_dependency(&self) -> Self {
+        if let SourceKind::Git(GitReference::Rev(_abbrev)) = &self.kind {
+            if let Some(full) = &self.precise {
+                let mut url = self.url.clone();
+                url.set_fragment(None);
+                return Self {
+                    kind: SourceKind::Git(GitReference::Rev(full.clone())),
+                    precise: None,
+                    url,
+                    name: self.name.clone(),
+                };
+            }
+        } else if let SourceKind::Git(reference) = &self.kind {
+            if self.precise.is_some() {
+                return Self {
+                    kind: SourceKind::Git(reference.clone()),
+                    precise: None,
+                    url: self.url.clone(),
+                    name: self.name.clone(),
+                };
+            }
+        }
+        self.clone()
+    }
+
     /// Parses a source URL and returns the corresponding ID.
     ///
     /// ## Example
@@ -89,7 +119,7 @@ impl SourceId {
         let kind = parts.next().unwrap();
         let url = parts
             .next()
-            .ok_or_else(|| Error::Parse(format!("invalid source `{}`", string)))?;
+            .ok_or_else(|| Error::Parse(format!("invalid source `{string}`")))?;
 
         match kind {
             "git" => {
@@ -122,8 +152,7 @@ impl SourceId {
             }
             "path" => Self::new(SourceKind::Path, url.into_url()?),
             kind => Err(Error::Parse(format!(
-                "unsupported source protocol: `{}` from `{string}`",
-                kind
+                "unsupported source protocol: `{kind}` from `{string}`"
             ))),
         }
     }
@@ -242,6 +271,11 @@ impl SourceId {
             || self.kind == SourceKind::SparseRegistry
                 && self.url.as_str() == &CRATES_IO_SPARSE_INDEX[7..]
     }
+
+    /// A view of the [`SourceId`] that can be `Display`ed as a URL.
+    pub(crate) fn as_url(&self, encoded: bool) -> SourceIdAsUrl<'_> {
+        SourceIdAsUrl { id: self, encoded }
+    }
 }
 
 impl Default for SourceId {
@@ -260,24 +294,37 @@ impl FromStr for SourceId {
 
 impl fmt::Display for SourceId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        self.as_url(false).fmt(f)
+    }
+}
+
+/// A `Display`able view into a `SourceId` that will write it as a url
+pub(crate) struct SourceIdAsUrl<'a> {
+    id: &'a SourceId,
+    encoded: bool,
+}
+
+impl<'a> fmt::Display for SourceIdAsUrl<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.id {
             SourceId {
                 kind: SourceKind::Path,
                 ref url,
                 ..
-            } => write!(f, "path+{}", url),
+            } => write!(f, "path+{url}"),
             SourceId {
                 kind: SourceKind::Git(ref reference),
                 ref url,
                 ref precise,
                 ..
             } => {
-                write!(f, "git+{}", url)?;
-                if let Some(pretty) = reference.pretty_ref() {
-                    write!(f, "?{}", pretty)?;
+                write!(f, "git+{url}")?;
+                // TODO: set it to true when the default is lockfile v4,
+                if let Some(pretty) = reference.pretty_ref(self.encoded) {
+                    write!(f, "?{pretty}")?;
                 }
                 if let Some(precise) = precise.as_ref() {
-                    write!(f, "#{}", precise)?;
+                    write!(f, "#{precise}")?;
                 }
                 Ok(())
             }
@@ -285,23 +332,23 @@ impl fmt::Display for SourceId {
                 kind: SourceKind::Registry,
                 ref url,
                 ..
-            } => write!(f, "registry+{}", url),
+            } => write!(f, "registry+{url}"),
             SourceId {
                 kind: SourceKind::SparseRegistry,
                 ref url,
                 ..
-            } => write!(f, "sparse+{}", url),
+            } => write!(f, "sparse+{url}"),
             SourceId {
                 kind: SourceKind::LocalRegistry,
                 ref url,
                 ..
-            } => write!(f, "local-registry+{}", url),
+            } => write!(f, "local-registry+{url}"),
             #[cfg(any(unix, windows))]
             SourceId {
                 kind: SourceKind::Directory,
                 ref url,
                 ..
-            } => write!(f, "directory+{}", url),
+            } => write!(f, "directory+{url}"),
         }
     }
 }
@@ -339,10 +386,13 @@ pub enum GitReference {
 impl GitReference {
     /// Returns a `Display`able view of this git reference, or None if using
     /// the head of the default branch
-    pub fn pretty_ref(&self) -> Option<PrettyRef<'_>> {
-        match *self {
+    pub fn pretty_ref(&self, url_encoded: bool) -> Option<PrettyRef<'_>> {
+        match self {
             GitReference::Branch(ref s) if *s == DEFAULT_BRANCH => None,
-            _ => Some(PrettyRef { inner: self }),
+            _ => Some(PrettyRef {
+                inner: self,
+                url_encoded,
+            }),
         }
     }
 }
@@ -350,15 +400,33 @@ impl GitReference {
 /// A git reference that can be `Display`ed
 pub struct PrettyRef<'a> {
     inner: &'a GitReference,
+    url_encoded: bool,
 }
 
 impl<'a> fmt::Display for PrettyRef<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self.inner {
-            GitReference::Branch(ref b) => write!(f, "branch={}", b),
-            GitReference::Tag(ref s) => write!(f, "tag={}", s),
-            GitReference::Rev(ref s) => write!(f, "rev={}", s),
+        let value: &str = match self.inner {
+            GitReference::Branch(s) => {
+                write!(f, "branch=")?;
+                s
+            }
+            GitReference::Tag(s) => {
+                write!(f, "tag=")?;
+                s
+            }
+            GitReference::Rev(s) => {
+                write!(f, "rev=")?;
+                s
+            }
+        };
+        if self.url_encoded {
+            for value in url::form_urlencoded::byte_serialize(value.as_bytes()) {
+                write!(f, "{value}")?;
+            }
+        } else {
+            write!(f, "{value}")?;
         }
+        Ok(())
     }
 }
 
@@ -370,7 +438,7 @@ trait IntoUrl {
 
 impl<'a> IntoUrl for &'a str {
     fn into_url(self) -> Result<Url> {
-        Url::parse(self).map_err(|s| Error::Parse(format!("invalid url `{}`: {}", self, s)))
+        Url::parse(self).map_err(|s| Error::Parse(format!("invalid url `{self}`: {s}")))
     }
 }
 

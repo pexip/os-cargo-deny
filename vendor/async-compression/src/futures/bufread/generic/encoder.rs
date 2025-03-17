@@ -6,7 +6,7 @@ use std::io::Result;
 
 use crate::{codec::Encode, util::PartialBuffer};
 use futures_core::ready;
-use futures_io::{AsyncBufRead, AsyncRead};
+use futures_io::{AsyncBufRead, AsyncRead, AsyncWrite, IoSlice};
 use pin_project_lite::pin_project;
 
 #[derive(Debug)]
@@ -18,7 +18,7 @@ enum State {
 
 pin_project! {
     #[derive(Debug)]
-    pub struct Encoder<R, E: Encode> {
+    pub struct Encoder<R, E> {
         #[pin]
         reader: R,
         encoder: E,
@@ -34,7 +34,9 @@ impl<R: AsyncBufRead, E: Encode> Encoder<R, E> {
             state: State::Encoding,
         }
     }
+}
 
+impl<R, E> Encoder<R, E> {
     pub fn get_ref(&self) -> &R {
         &self.reader
     }
@@ -47,10 +49,16 @@ impl<R: AsyncBufRead, E: Encode> Encoder<R, E> {
         self.project().reader
     }
 
+    pub(crate) fn get_encoder_ref(&self) -> &E {
+        &self.encoder
+    }
+
     pub fn into_inner(self) -> R {
         self.reader
     }
+}
 
+impl<R: AsyncBufRead, E: Encode> Encoder<R, E> {
     fn do_poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -109,5 +117,27 @@ impl<R: AsyncBufRead, E: Encode> AsyncRead for Encoder<R, E> {
             Poll::Pending if output.written().is_empty() => Poll::Pending,
             _ => Poll::Ready(Ok(output.written().len())),
         }
+    }
+}
+
+impl<R: AsyncWrite, E> AsyncWrite for Encoder<R, E> {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize>> {
+        self.get_pin_mut().poll_write(cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
+        self.get_pin_mut().poll_flush(cx)
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
+        self.get_pin_mut().poll_close(cx)
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[IoSlice<'_>],
+    ) -> Poll<Result<usize>> {
+        self.get_pin_mut().poll_write_vectored(cx, bufs)
     }
 }

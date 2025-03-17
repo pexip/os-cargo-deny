@@ -30,7 +30,7 @@ pub(crate) struct LicenseEntry {
 /// # use std::error::Error;
 /// use askalono::{Store, TextData};
 ///
-/// # fn main() -> Result<(), Box<Error>> {
+/// # fn main() -> Result<(), Box<dyn Error>> {
 /// let store = Store::from_cache(File::open("askalono-cache.bin.zstd")?)?;
 /// let result = store.analyze(&TextData::from("what's this"));
 /// # Ok(())
@@ -77,7 +77,7 @@ impl Store {
     }
 
     /// Get all licenses by name via iterator.
-    pub fn licenses<'a>(&'a self) -> impl Iterator<Item = &String> + 'a {
+    pub fn licenses(&self) -> impl Iterator<Item = &String> {
         self.licenses.keys()
     }
 

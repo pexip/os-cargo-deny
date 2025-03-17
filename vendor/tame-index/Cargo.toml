@@ -13,7 +13,13 @@
 edition = "2021"
 rust-version = "1.67.0"
 name = "tame-index"
-version = "0.12.0"
+version = "0.18.1"
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
 description = "Provides access to local and remote cargo registry indices"
 homepage = "https://github.com/EmbarkStudios/tame-index"
 documentation = "https://docs.rs/tame-index"
@@ -22,22 +28,82 @@ license = "Apache-2.0 OR MIT"
 repository = "https://github.com/EmbarkStudios/tame-index"
 
 [package.metadata.docs.rs]
-all-features = true
+features = ["__internal_all"]
 rustdoc-args = [
     "--cfg",
     "docsrs",
 ]
 
-[profile.dev.package.sha2]
-opt-level = 3
+[features]
+__git = []
+__internal_all = [
+    "git",
+    "sparse",
+    "local-builder",
+]
+default = ["reqwest?/rustls-tls-webpki-roots"]
+git = ["gix-reqwest"]
+gix-curl = [
+    "gix/blocking-http-transport-curl",
+    "__git",
+]
+gix-reqwest = [
+    "gix/blocking-http-transport-reqwest",
+    "dep:reqwest",
+    "__git",
+]
+local = [
+    "dep:sha2",
+    "dep:bytes",
+]
+local-builder = [
+    "local",
+    "dep:reqwest",
+]
+native-certs = ["reqwest?/rustls-tls-native-roots"]
+sparse = [
+    "dep:reqwest",
+    "dep:tokio",
+    "dep:rayon",
+    "dep:crossbeam-channel",
+]
+
+[lib]
+name = "tame_index"
+path = "src/lib.rs"
+
+[[test]]
+name = "cache"
+path = "tests/cache.rs"
+
+[[test]]
+name = "flock"
+path = "tests/flock.rs"
+
+[[test]]
+name = "git"
+path = "tests/git.rs"
+
+[[test]]
+name = "local"
+path = "tests/local.rs"
+
+[[test]]
+name = "sparse"
+path = "tests/sparse.rs"
+
+[[test]]
+name = "utils"
+path = "tests/utils.rs"
 
 [[bench]]
 name = "sparse"
+path = "benches/sparse.rs"
 harness = false
 required-features = ["sparse"]
 
 [dependencies.bytes]
-version = "1.4"
+version = "1.10"
 optional = true
 
 [dependencies.camino]
@@ -48,8 +114,8 @@ version = "0.5"
 optional = true
 
 [dependencies.gix]
-version = "0.63"
-features = ["blocking-http-transport-reqwest"]
+version = "0.70"
+features = []
 optional = true
 default-features = false
 
@@ -57,7 +123,7 @@ default-features = false
 version = "0.5"
 
 [dependencies.http]
-version = "1.1"
+version = "1.2"
 
 [dependencies.memchr]
 version = "2.5"
@@ -75,6 +141,9 @@ features = [
 ]
 optional = true
 default-features = false
+
+[dependencies.rustc-stable-hash]
+version = "0.1"
 
 [dependencies.semver]
 version = "1.0"
@@ -97,14 +166,14 @@ optional = true
 default-features = false
 
 [dependencies.smol_str]
-version = "0.2.0"
+version = "0.3"
 features = ["serde"]
 
 [dependencies.thiserror]
-version = "1.0"
+version = "2.0"
 
 [dependencies.tokio]
-version = "1.0"
+version = "1.43"
 features = [
     "rt-multi-thread",
     "time",
@@ -113,45 +182,27 @@ optional = true
 default-features = false
 
 [dependencies.toml-span]
-version = "0.2"
+version = "0.4"
 
 [dependencies.twox-hash]
-version = "1.6"
+version = "2.1"
+features = ["xxhash64"]
 default-features = false
 
 [dev-dependencies.cargo_metadata]
-version = "0.18"
+version = "0.19"
 
 [dev-dependencies.rayon]
 version = "1.7"
 
 [dev-dependencies.tempfile]
-version = "3.6"
+version = "3.15"
 
 [dev-dependencies.tiny-bench]
-version = "0.3"
-
-[features]
-default = ["reqwest?/rustls-tls-webpki-roots"]
-git = [
-    "dep:gix",
-    "dep:reqwest",
-]
-local = [
-    "dep:sha2",
-    "dep:bytes",
-]
-local-builder = [
-    "local",
-    "dep:reqwest",
-]
-native-certs = ["reqwest?/rustls-tls-native-roots"]
-sparse = [
-    "dep:reqwest",
-    "dep:tokio",
-    "dep:rayon",
-    "dep:crossbeam-channel",
-]
+version = "0.4"
 
 [target."cfg(unix)".dependencies.libc]
 version = "0.2"
+
+[profile.dev.package.sha2]
+opt-level = 3

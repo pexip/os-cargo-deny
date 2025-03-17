@@ -25,26 +25,33 @@
 //! }
 //! ```
 
+#[cfg(feature = "metadata")]
 pub use cargo_metadata as cm;
+#[cfg(not(feature = "metadata"))]
+pub mod cm;
+
 pub use cfg_expr;
 
 #[cfg(feature = "targets")]
 pub use cfg_expr::target_lexicon;
 
 use cm::DependencyKind as DK;
+pub use cm::{Metadata, Package, PackageId};
+
 pub use petgraph;
 pub use semver;
 
-pub use cm::camino::{self, Utf8Path, Utf8PathBuf};
-use petgraph::{graph::EdgeIndex, graph::NodeIndex, visit::EdgeRef, Direction};
+pub use camino::{self, Utf8Path, Utf8PathBuf};
+use petgraph::{Direction, graph::EdgeIndex, graph::NodeIndex, visit::EdgeRef};
 
 mod builder;
 mod errors;
 mod pkgspec;
 
 pub use builder::{
+    Builder, Cmd, LockOptions, NoneFilter, OnFilter, Scope, Target,
     features::{Feature, ParsedFeature},
-    index, Builder, Cmd, LockOptions, NoneFilter, OnFilter, Scope, Target,
+    index,
 };
 pub use errors::Error;
 pub use pkgspec::PkgSpec;
@@ -83,11 +90,11 @@ impl Kid {
 }
 
 #[allow(clippy::fallible_impl_from)]
-impl From<cargo_metadata::PackageId> for Kid {
-    fn from(pid: cargo_metadata::PackageId) -> Self {
-        let repr = pid.repr;
+impl From<PackageId> for Kid {
+    fn from(pid: PackageId) -> Self {
+        let mut repr = pid.repr;
 
-        let gen = || {
+        let mut parse = || {
             let components = if repr.contains(' ') {
                 let name = (0, repr.find(' ')?);
                 let version = (name.1 + 1, repr[name.1 + 1..].find(' ')? + name.1 + 1);
@@ -101,13 +108,108 @@ impl From<cargo_metadata::PackageId> for Kid {
 
                 [name, version, source]
             } else {
-                let vmn = repr.rfind('#')?;
+                let mut vmn = repr.rfind('#')?;
                 let (name, version) = if let Some(split) = repr[vmn..].find('@') {
                     ((vmn + 1, vmn + split), (vmn + split + 1, repr.len()))
                 } else {
                     let begin = repr.rfind('/')? + 1;
                     let end = if repr.starts_with("git+") {
-                        repr[begin..].find('?').map_or(vmn, |q| q + begin)
+                        // Unfortunately the stable format percent encodes the source url in the metadata, and since
+                        // git branches/tags can contain various special characters, notably '/', we need to decode them
+                        // to be able to match against the non-encoded url used...everywhere else
+                        let end = repr[begin..].rfind('?').map_or(vmn, |q| q + begin);
+
+                        if repr[end..].contains('%') {
+                            let mut decoded = String::new();
+                            let mut encoded = &repr[end..];
+                            let before = encoded.len();
+
+                            loop {
+                                let Some(pi) = encoded.find('%') else {
+                                    decoded.push_str(encoded);
+                                    break;
+                                };
+
+                                decoded.push_str(&encoded[..pi]);
+
+                                let Some(encoding) = encoded.get(pi + 1..pi + 3) else {
+                                    // This _should_ never happen, but just in case
+                                    panic!(
+                                        "invalid percent encoding in '{}', '{}' should be exactly 3 digits long",
+                                        &repr[end..],
+                                        &encoded[pi..]
+                                    );
+                                };
+
+                                // https://en.wikipedia.org/wiki/Percent-encoding
+                                // Reserved characters after percent-encoding
+                                //
+                                // ␣   !   "   #   $   %   &   '   (   )   *   +   ,   /   :   ;   =   ?   @   [   ]
+                                // %20 %21 %22 %23 %24 %25 %26 %27 %28 %29 %2A %2B %2C %2F %3A %3B %3D %3F %40 %5B %5D
+                                //
+                                // Common characters after percent-encoding (ASCII or UTF-8 based)
+                                //
+                                // -   .   <   >   \   ^   _   `   {   |   }   ~
+                                // %2D %2E %3C %3E %5C %5E %5F %60 %7B %7C %7D %7E
+                                //
+                                // Note that `£` and `€` can also be percent encoded, but are _completely_ different and
+                                // I don't feel like supporting it until someone actually complains
+
+                                let c = match encoding {
+                                    // By far the most likely one
+                                    "2F" | "2f" => '/',
+                                    "21" => '!',
+                                    "22" => '"',
+                                    "23" => '#',
+                                    "24" => '$',
+                                    "25" => '%',
+                                    "26" => '&',
+                                    "27" => '\'',
+                                    "28" => '(',
+                                    "29" => ')',
+                                    "2A" | "2a" => '*',
+                                    "2B" | "2b" => '+',
+                                    "2C" | "2c" => ',',
+                                    "2D" | "2d" => '-',
+                                    "2E" | "2e" => '.',
+                                    "3B" | "3b" => ';',
+                                    "3C" | "3c" => '<',
+                                    "3D" | "3d" => '=',
+                                    "3E" | "3e" => '>',
+                                    "40" => '@',
+                                    "5D" | "5d" => ']',
+                                    "5F" | "5f" => '_',
+                                    "60" => '`',
+                                    "7B" | "7b" => '{',
+                                    "7C" | "7c" => '|',
+                                    "7D" | "7d" => '}',
+                                    // These are invalid in branches/tags, but meh
+                                    // https://git-scm.com/docs/git-check-ref-format
+                                    "20" => ' ',
+                                    "3A" | "3a" => ':',
+                                    "3F" | "3f" => '?',
+                                    "5B" | "5b" => '[',
+                                    "5C" | "5c" => '\\',
+                                    "5E" | "5e" => '^',
+                                    "7E" | "7e" => '~',
+                                    _ => panic!(
+                                        "unknown percent encoding '%{encoding}' in '{}'",
+                                        &repr[end..]
+                                    ),
+                                };
+
+                                decoded.push(c);
+                                encoded = &encoded[pi + 3..];
+                            }
+
+                            repr.truncate(end);
+                            repr.push_str(&decoded);
+
+                            // move the version string back to account for the now shorter decoded repr
+                            vmn -= before - decoded.len();
+                        }
+
+                        end
                     } else {
                         vmn
                     };
@@ -121,7 +223,7 @@ impl From<cargo_metadata::PackageId> for Kid {
             Some(components)
         };
 
-        if let Some(components) = gen() {
+        if let Some(components) = parse() {
             Self { repr, components }
         } else {
             panic!("unable to parse package id '{repr}'");
@@ -205,6 +307,7 @@ impl From<DK> for DepKind {
             DK::Normal => Self::Normal,
             DK::Build => Self::Build,
             DK::Development => Self::Dev,
+            #[cfg(feature = "metadata")]
             DK::Unknown => unreachable!(),
         }
     }
@@ -238,10 +341,15 @@ pub enum Node<N> {
     Krate {
         /// The unique identifier for this node.
         id: Kid,
-        /// Associated user data with the node. Must be From<cargo_metadata::Package>
+        /// Associated user data with the node. Must be `From<cargo_metadata::Package>`
         krate: N,
         /// List of features enabled on the crate
         features: EnabledFeatures,
+        /// Mapping to the exact node that a dependency is resolved to.
+        ///
+        /// This can be used manually but the helper `[Krates::resolved_dependency`]
+        /// is easier to use
+        dep_mapping: Vec<Option<NodeId>>,
     },
     Feature {
         /// The node index for the crate this feature is for
@@ -288,7 +396,7 @@ pub enum Edge {
     Dep {
         /// The dependency kind for the edge link
         kind: DepKind,
-        /// A possible cfg() or <target-triple> applied to this dependency
+        /// A possible `cfg()` or <target-triple> applied to this dependency
         cfg: Option<String>,
     },
     /// An edge from one feature to another
@@ -296,7 +404,7 @@ pub enum Edge {
     DepFeature {
         /// The dependency kind for the edge link
         kind: DepKind,
-        /// A possible cfg() or <target-triple> applied to this dependency
+        /// A possible `cfg()` or <target-triple> applied to this dependency
         cfg: Option<String>,
     },
 }
@@ -464,6 +572,33 @@ impl<N, E> Krates<N, E> {
         }
 
         direct_dependents
+    }
+
+    /// Retrieves the krate that was resolved for the specified crate dependency.
+    ///
+    /// This will return `None` if the krate doesn't exist, the dependency doesn't
+    /// exist, or dependency was pruned.
+    ///
+    /// Note that `dep_index` is the index of [`cargo_metadata::Package::dependencies`]
+    #[inline]
+    pub fn resolved_dependency(&self, nid: NodeId, dep_index: usize) -> Option<&N> {
+        if nid.index() >= self.krates_end {
+            return None;
+        }
+
+        let Node::Krate { dep_mapping, .. } = &self.graph[nid] else {
+            return None;
+        };
+        dep_mapping
+            .get(dep_index)
+            .copied()
+            .flatten()
+            .and_then(|nid| {
+                let Node::Krate { krate, .. } = &self.graph[nid] else {
+                    return None;
+                };
+                Some(krate)
+            })
     }
 
     /// Get the node identifier for the specified crate identifier
@@ -743,6 +878,59 @@ impl<N, E> std::ops::Index<usize> for Krates<N, E> {
     }
 }
 
+#[derive(Debug)]
+struct MdTarget {
+    inner: String,
+    cfg: Option<cfg_expr::Expression>,
+    #[cfg(feature = "metadata")]
+    platform: cargo_platform::Platform,
+}
+
+#[cfg(feature = "metadata")]
+impl From<cargo_platform::Platform> for MdTarget {
+    fn from(platform: cargo_platform::Platform) -> Self {
+        let inner = platform.to_string();
+        let cfg = inner
+            .starts_with("cfg(")
+            .then(|| cfg_expr::Expression::parse(&inner).ok())
+            .flatten();
+        Self {
+            inner,
+            cfg,
+            platform,
+        }
+    }
+}
+
+#[cfg(not(feature = "metadata"))]
+impl From<String> for MdTarget {
+    fn from(inner: String) -> Self {
+        let cfg = inner
+            .starts_with("cfg(")
+            .then(|| cfg_expr::Expression::parse(&inner).ok())
+            .flatten();
+        Self { inner, cfg }
+    }
+}
+
+#[cfg(feature = "metadata")]
+fn targets_eq(target: &Option<MdTarget>, other: &Option<cargo_platform::Platform>) -> bool {
+    match (target, other) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a.platform.eq(b),
+        _ => false,
+    }
+}
+
+#[cfg(not(feature = "metadata"))]
+fn targets_eq(target: &Option<MdTarget>, other: &Option<String>) -> bool {
+    match (target, other) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a.inner.eq(b),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -750,28 +938,83 @@ mod tests {
         let ids = [
             // STABLE
             // A typical registry url, source, name, and version are always distinct
-            ("registry+https://github.com/rust-lang/crates.io-index#ab_glyph@0.2.22", "ab_glyph", "0.2.22", "registry+https://github.com/rust-lang/crates.io-index"),
+            (
+                "registry+https://github.com/rust-lang/crates.io-index#ab_glyph@0.2.22",
+                "ab_glyph",
+                "0.2.22",
+                "registry+https://github.com/rust-lang/crates.io-index",
+            ),
             // A git url, with a `rev` specifier. For git urls, if the name of the package is the same as the last path component of the source, the name is not repeated after the #, only the version
-            ("git+https://github.com/EmbarkStudios/egui-stylist?rev=3900e8aedc5801e42c1bb747cfd025615bf3b832#0.2.0", "egui-stylist", "0.2.0", "git+https://github.com/EmbarkStudios/egui-stylist?rev=3900e8aedc5801e42c1bb747cfd025615bf3b832"),
+            (
+                "git+https://github.com/EmbarkStudios/egui-stylist?rev=3900e8aedc5801e42c1bb747cfd025615bf3b832#0.2.0",
+                "egui-stylist",
+                "0.2.0",
+                "git+https://github.com/EmbarkStudios/egui-stylist?rev=3900e8aedc5801e42c1bb747cfd025615bf3b832",
+            ),
             // The same as with git urls, the name is only after the # if it is different from the last path component
-            ("path+file:///home/jake/code/ark/components/allocator#ark-allocator@0.1.0", "ark-allocator", "0.1.0", "path+file:///home/jake/code/ark/components/allocator"),
+            (
+                "path+file:///home/jake/code/ark/components/allocator#ark-allocator@0.1.0",
+                "ark-allocator",
+                "0.1.0",
+                "path+file:///home/jake/code/ark/components/allocator",
+            ),
             // A git url with a `branch` specifier
-            ("git+https://github.com/EmbarkStudios/ash?branch=nv-low-latency2#0.38.0+1.3.269", "ash", "0.38.0+1.3.269", "git+https://github.com/EmbarkStudios/ash?branch=nv-low-latency2"),
+            (
+                "git+https://github.com/EmbarkStudios/ash?branch=nv-low-latency2#0.38.0+1.3.269",
+                "ash",
+                "0.38.0+1.3.269",
+                "git+https://github.com/EmbarkStudios/ash?branch=nv-low-latency2",
+            ),
             // A git url with a `branch` specifier and a different name from the repo
-            ("git+https://github.com/EmbarkStudios/fsr-rs?branch=nv-low-latency2#fsr@0.1.7", "fsr", "0.1.7", "git+https://github.com/EmbarkStudios/fsr-rs?branch=nv-low-latency2"),
+            (
+                "git+https://github.com/EmbarkStudios/fsr-rs?branch=nv-low-latency2#fsr@0.1.7",
+                "fsr",
+                "0.1.7",
+                "git+https://github.com/EmbarkStudios/fsr-rs?branch=nv-low-latency2",
+            ),
             // A git url that doesn't specify a branch, tag, or revision, defaulting to HEAD
-            ("git+https://github.com/ComunidadAylas/glsl-lang#0.5.2", "glsl-lang", "0.5.2", "git+https://github.com/ComunidadAylas/glsl-lang"),
+            (
+                "git+https://github.com/ComunidadAylas/glsl-lang#0.5.2",
+                "glsl-lang",
+                "0.5.2",
+                "git+https://github.com/ComunidadAylas/glsl-lang",
+            ),
             // A git url that uses a `tag` specifier
-            ("git+https://github.com/vtavernier/glsl-lang?tag=v0.5.2#0.5.2", "glsl-lang", "0.5.2", "git+https://github.com/vtavernier/glsl-lang?tag=v0.5.2"),
+            (
+                "git+https://github.com/vtavernier/glsl-lang?tag=v0.5.2#0.5.2",
+                "glsl-lang",
+                "0.5.2",
+                "git+https://github.com/vtavernier/glsl-lang?tag=v0.5.2",
+            ),
             // OPAQUE
-            ("fuser 0.4.1 (git+https://github.com/cberner/fuser?branch=master#b2e7622942e52a28ffa85cdaf48e28e982bb6923)", "fuser", "0.4.1", "git+https://github.com/cberner/fuser?branch=master"),
-            ("fuser 0.4.1 (git+https://github.com/cberner/fuser?rev=b2e7622#b2e7622942e52a28ffa85cdaf48e28e982bb6923)", "fuser", "0.4.1", "git+https://github.com/cberner/fuser?rev=b2e7622"),
-            ("a 0.1.0 (path+file:///home/jake/code/krates/tests/ws/a)", "a", "0.1.0", "path+file:///home/jake/code/krates/tests/ws/a"),
-            ("bindgen 0.59.2 (registry+https://github.com/rust-lang/crates.io-index)", "bindgen", "0.59.2", "registry+https://github.com/rust-lang/crates.io-index"),
+            (
+                "fuser 0.4.1 (git+https://github.com/cberner/fuser?branch=master#b2e7622942e52a28ffa85cdaf48e28e982bb6923)",
+                "fuser",
+                "0.4.1",
+                "git+https://github.com/cberner/fuser?branch=master",
+            ),
+            (
+                "fuser 0.4.1 (git+https://github.com/cberner/fuser?rev=b2e7622#b2e7622942e52a28ffa85cdaf48e28e982bb6923)",
+                "fuser",
+                "0.4.1",
+                "git+https://github.com/cberner/fuser?rev=b2e7622",
+            ),
+            (
+                "a 0.1.0 (path+file:///home/jake/code/krates/tests/ws/a)",
+                "a",
+                "0.1.0",
+                "path+file:///home/jake/code/krates/tests/ws/a",
+            ),
+            (
+                "bindgen 0.59.2 (registry+https://github.com/rust-lang/crates.io-index)",
+                "bindgen",
+                "0.59.2",
+                "registry+https://github.com/rust-lang/crates.io-index",
+            ),
         ];
 
         for (repr, name, version, source) in ids {
-            let kid = super::Kid::from(cargo_metadata::PackageId {
+            let kid = super::Kid::from(super::PackageId {
                 repr: repr.to_owned(),
             });
 

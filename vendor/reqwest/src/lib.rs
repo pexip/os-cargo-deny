@@ -139,8 +139,11 @@
 //!
 //! System proxies look in environment variables to set HTTP or HTTPS proxies.
 //!
-//! `HTTP_PROXY` or `http_proxy` provide http proxies for http connections while
+//! `HTTP_PROXY` or `http_proxy` provide HTTP proxies for HTTP connections while
 //! `HTTPS_PROXY` or `https_proxy` provide HTTPS proxies for HTTPS connections.
+//! `ALL_PROXY` or `all_proxy` provide proxies for both HTTP and HTTPS connections.
+//! If both the all proxy and HTTP or HTTPS proxy variables are set the more specific
+//! HTTP or HTTPS proxies take precedence.
 //!
 //! These can be overwritten by adding a [`Proxy`] to `ClientBuilder`
 //! i.e. `let proxy = reqwest::Proxy::http("https://secure.example")?;`
@@ -170,7 +173,7 @@
 //!
 //! The Client implementation automatically switches to the WASM one when the target_arch is wasm32,
 //! the usage is basically the same as the async api. Some of the features are disabled in wasm
-//! : [`tls`], [`cookie`], [`blocking`].
+//! : [`tls`], [`cookie`], [`blocking`], as well as various `ClientBuilder` methods such as `timeout()` and `connector_layer()`.
 //!
 //!
 //! ## Optional Features

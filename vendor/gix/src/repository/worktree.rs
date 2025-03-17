@@ -2,7 +2,12 @@ use crate::{worktree, Worktree};
 
 /// Interact with individual worktrees and their information.
 impl crate::Repository {
-    /// Return a list of all _linked_ worktrees sorted by private git dir path as a lightweight proxy.
+    /// Return a list of all **linked** worktrees sorted by private git dir path as a lightweight proxy.
+    ///
+    /// This means the number is `0` even if there is the main worktree, as it is not counted as linked worktree.
+    /// This also means it will be `1` if there is one linked worktree next to the main worktree.
+    /// It's worth noting that a *bare* repository may have one or more linked worktrees, but has no *main* worktree,
+    /// which is the reason why the *possibly* available main worktree isn't listed here.
     ///
     /// Note that these need additional processing to become usable, but provide a first glimpse a typical worktree information.
     pub fn worktrees(&self) -> std::io::Result<Vec<worktree::Proxy<'_>>> {
@@ -19,7 +24,7 @@ impl crate::Repository {
                 res.push(worktree::Proxy {
                     parent: self,
                     git_dir: worktree_git_dir,
-                })
+                });
             }
         }
         res.sort_by(|a, b| a.git_dir.cmp(&b.git_dir));
@@ -57,7 +62,6 @@ impl crate::Repository {
     /// The entries will look exactly like they would if one would check them out, with filters applied.
     /// The `export-ignore` attribute is used to skip blobs or directories to which it applies.
     #[cfg(feature = "worktree-stream")]
-    #[gix_macros::momo]
     pub fn worktree_stream(
         &self,
         id: impl Into<gix_hash::ObjectId>,

@@ -30,6 +30,12 @@ pub enum ResolveVersion {
     /// For more information, see:
     /// <https://internals.rust-lang.org/t/upcoming-changes-to-cargo-lock/14017>
     V3 = 3,
+
+    /// SourceId URL serialization is aware of URL encoding.
+    ///
+    /// For more information, see:
+    /// <https://github.com/rust-lang/cargo/pull/12852>
+    V4 = 4,
 }
 
 impl ResolveVersion {
@@ -77,7 +83,7 @@ impl FromStr for ResolveVersion {
 
     fn from_str(s: &str) -> Result<Self> {
         u32::from_str(s)
-            .map_err(|_| Error::Parse(format!("invalid Cargo.lock format version: `{}`", s)))
+            .map_err(|_| Error::Parse(format!("invalid Cargo.lock format version: `{s}`")))
             .and_then(Self::try_from)
     }
 }
@@ -90,9 +96,9 @@ impl TryFrom<u32> for ResolveVersion {
             1 => Ok(ResolveVersion::V1),
             2 => Ok(ResolveVersion::V2),
             3 => Ok(ResolveVersion::V3),
+            4 => Ok(ResolveVersion::V4),
             _ => Err(Error::Parse(format!(
-                "invalid Cargo.lock format version: `{}`",
-                num
+                "invalid Cargo.lock format version: `{num}`"
             ))),
         }
     }

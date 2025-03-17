@@ -23,7 +23,7 @@ pub use errors::*;
 
 /// A platform maintaining state needed to interact with submodules, created by [`Repository::submodules()].
 pub(crate) struct SharedState<'repo> {
-    pub(crate) repo: &'repo Repository,
+    pub repo: &'repo Repository,
     pub(crate) modules: ModulesSnapshot,
     is_active: RefCell<Option<IsActiveState>>,
     index: RefCell<Option<IndexPersistedOrInMemory>>,
@@ -83,7 +83,7 @@ struct IsActiveState {
 }
 
 ///Access
-impl<'repo> Submodule<'repo> {
+impl Submodule<'_> {
     /// Return the submodule's name.
     pub fn name(&self) -> &BStr {
         self.name.as_ref()
@@ -125,7 +125,7 @@ impl<'repo> Submodule<'repo> {
                 .repo
                 .config
                 .resolved
-                .boolean_by_key("fetch.recurseSubmodules")
+                .boolean("fetch.recurseSubmodules")
                 .map(|res| crate::config::tree::Fetch::RECURSE_SUBMODULES.try_into_recurse_submodules(res))
                 .transpose()?,
         })
@@ -155,7 +155,7 @@ impl<'repo> Submodule<'repo> {
                 attributes
                     .set_case(case)
                     .at_entry(relative_path, Some(is_dir_to_mode(is_dir)), &self.state.repo.objects)
-                    .map_or(false, |platform| platform.matching_attributes(out))
+                    .is_ok_and(|platform| platform.matching_attributes(out))
             }
         })?;
         Ok(is_active)
@@ -276,7 +276,6 @@ impl<'repo> Submodule<'repo> {
 }
 
 ///
-#[allow(clippy::empty_docs)]
 #[cfg(feature = "status")]
 pub mod status {
     use super::{head_id, index_id, open, Status};
@@ -300,12 +299,12 @@ pub mod status {
         #[error(transparent)]
         StatusPlatform(#[from] crate::status::Error),
         #[error(transparent)]
-        Status(#[from] crate::status::index_worktree::iter::Error),
+        StatusIter(#[from] crate::status::into_iter::Error),
         #[error(transparent)]
-        IndexWorktreeStatus(#[from] crate::status::index_worktree::Error),
+        NextStatusItem(#[from] crate::status::iter::Error),
     }
 
-    impl<'repo> Submodule<'repo> {
+    impl Submodule<'_> {
         /// Return the status of the submodule.
         ///
         /// Use `ignore` to control the portion of the submodule status to ignore. It can be obtained from
@@ -324,15 +323,15 @@ pub mod status {
         /// Return the status of the submodule, just like [`status`](Self::status), but allows to adjust options
         /// for more control over how the status is performed.
         ///
+        /// If `check_dirty` is `true`, the computation will stop once the first in a ladder operations
+        /// ordered from cheap to expensive shows that the submodule is dirty. When checking for detailed
+        /// status information (i.e. untracked file, modifications, HEAD-index changes) only the first change
+        /// will be kept to stop as early as possible.
+        ///
         /// Use `&mut std::convert::identity` for `adjust_options` if no specific options are desired.
         /// A reason to change them might be to enable sorting to enjoy deterministic order of changes.
         ///
         /// The status allows to easily determine if a submodule [has changes](Status::is_dirty).
-        ///
-        /// ### Incomplete Implementation Warning
-        ///
-        /// Currently, changes between the head and the index aren't computed.
-        // TODO: Run the full status, including tree->index once available.
         #[doc(alias = "submodule_status", alias = "git2")]
         pub fn status_opts(
             &self,
@@ -391,10 +390,13 @@ pub mod status {
                         opts.dirwalk_options = None;
                     }
                 })
-                .into_index_worktree_iter(Vec::new())?;
+                .into_iter(None)?;
             let mut changes = Vec::new();
             for change in statuses {
                 changes.push(change?);
+                if check_dirty {
+                    break;
+                }
             }
             status.changes = Some(changes);
             Ok(status)
@@ -415,7 +417,7 @@ pub mod status {
                 return None;
             }
             let is_dirty =
-                self.checked_out_head_id != self.index_id || self.changes.as_ref().map_or(false, |c| !c.is_empty());
+                self.checked_out_head_id != self.index_id || self.changes.as_ref().is_some_and(|c| !c.is_empty());
             Some(is_dirty)
         }
     }
@@ -445,7 +447,7 @@ pub mod status {
             ///
             /// `None` if the computation wasn't performed as the computation was skipped early, or if no working tree was
             /// available or repository was available.
-            pub changes: Option<Vec<crate::status::index_worktree::iter::Item>>,
+            pub changes: Option<Vec<crate::status::Item>>,
         }
     }
 }

@@ -74,11 +74,17 @@
 //!     The plugin will fail if the data doesn't implement From<&str>. You can only have one `default`
 //!     on your enum.
 //!
+//! - `transparent`: Signals that the inner field's implementation should be used, instead of generating
+//!    one for this variant. Only applicable to enum variants with a single field. Compatible with the
+//!    `AsRefStr`, `Display` and `IntoStaticStr` derive macros. Note that `IntoStaticStr` has a few restrictions,
+//!    the value must be `'static` and `const_into_str` is not supported in combination with `transparent` b/c
+//!    transparent relies on a call on `From::from(variant)`.
+//!
 //! - `disabled`: removes variant from generated code.
 //!
 //! - `ascii_case_insensitive`: makes the comparison to this variant case insensitive (ASCII only).
 //!   If the whole enum is marked `ascii_case_insensitive`, you can specify `ascii_case_insensitive = false`
-//!   to disable case insensitivity on this v ariant.
+//!   to disable case insensitivity on this variant.
 //!
 //! - `message=".."`: Adds a message to enum variant. This is used in conjunction with the `EnumMessage`
 //!    trait to associate a message with a variant. If `detailed_message` is not provided,

@@ -17,14 +17,18 @@ pub enum Error {
 
     /// Errors related to versions
     Version(semver::Error),
+
+    /// Errors related to graph resolution
+    Resolution(String),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::Io(kind) => write!(f, "I/O operation failed: {}", kind),
-            Error::Parse(s) => write!(f, "parse error: {}", s),
-            Error::Version(err) => write!(f, "version error: {}", err),
+            Error::Io(kind) => write!(f, "I/O operation failed: {kind}"),
+            Error::Parse(s) => write!(f, "parse error: {s}"),
+            Error::Version(err) => write!(f, "version error: {err}"),
+            Error::Resolution(err) => write!(f, "resolution error: {err}"),
         }
     }
 }
@@ -43,12 +47,6 @@ impl From<semver::Error> for Error {
 
 impl From<std::num::ParseIntError> for Error {
     fn from(err: std::num::ParseIntError) -> Self {
-        Error::Parse(err.to_string())
-    }
-}
-
-impl From<toml::de::Error> for Error {
-    fn from(err: toml::de::Error) -> Self {
         Error::Parse(err.to_string())
     }
 }

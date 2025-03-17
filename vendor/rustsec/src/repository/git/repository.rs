@@ -34,7 +34,7 @@ impl Repository {
     pub fn default_path() -> PathBuf {
         home::cargo_home()
             .unwrap_or_else(|err| {
-                panic!("Error locating Cargo home directory: {}", err);
+                panic!("Error locating Cargo home directory: {err}");
             })
             .join(ADVISORY_DB_DIRECTORY)
     }
@@ -259,14 +259,14 @@ impl Repository {
     fn perform_fetch(repo: &mut gix::Repository) -> Result<(), Error> {
         let mut config = repo.config_snapshot_mut();
         config
-            .set_raw_value("committer", None, "name", "rustsec")
+            .set_raw_value_by("committer", None, "name", "rustsec")
             .map_err(|err| {
                 format_err!(ErrorKind::Repo, "failed to set `committer.name`: {}", err)
             })?;
         // Note we _have_ to set the email as well, but luckily gix does not actually
         // validate if it's a proper email or not :)
         config
-            .set_raw_value("committer", None, "email", "")
+            .set_raw_value_by("committer", None, "email", "")
             .map_err(|err| {
                 format_err!(ErrorKind::Repo, "failed to set `committer.email`: {}", err)
             })?;
@@ -318,7 +318,7 @@ impl Repository {
                                 message: "".into(),
                             },
                             expected: tx::PreviousValue::MustExist,
-                            new: gix::refs::Target::Peeled(remote_head_id),
+                            new: Target::Object(remote_head_id),
                         },
                         name,
                         deref: true,
@@ -338,7 +338,7 @@ impl Repository {
                     message: "".into(),
                 },
                 expected: tx::PreviousValue::Any,
-                new: gix::refs::Target::Peeled(remote_head_id),
+                new: Target::Object(remote_head_id),
             },
             name: "HEAD".try_into().unwrap(),
             deref: true,

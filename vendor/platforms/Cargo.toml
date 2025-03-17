@@ -12,11 +12,12 @@
 [package]
 edition = "2018"
 name = "platforms"
-version = "3.4.0"
+version = "3.5.0"
 authors = [
     "Tony Arcieri <bascule@gmail.com>",
-    "Sergey \"Shnatsel\" Davidoff <shnatsel@gmail.com>",
+    'Sergey "Shnatsel" Davidoff <shnatsel@gmail.com>',
 ]
+build = false
 exclude = [
     "platforms-data-gen/",
     "markdown-table-gen/",
@@ -24,6 +25,10 @@ exclude = [
     "platform-support.md",
     "regenerate-platforms-crate.sh",
 ]
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
 description = """
 Rust platform registry with information about valid Rust platforms (target
 triple, target_arch, target_os) sourced from the Rust compiler.
@@ -42,8 +47,12 @@ categories = [
     "no-std",
 ]
 license = "Apache-2.0 OR MIT"
-repository = "https://github.com/rustsec/rustsec/tree/main/platforms"
+repository = "https://github.com/rustsec/rustsec"
 resolver = "2"
+
+[lib]
+name = "platforms"
+path = "src/lib.rs"
 
 [dependencies.serde]
 version = "1"

@@ -20,7 +20,6 @@ pub enum Stage {
 pub type StageRaw = u32;
 
 ///
-#[allow(clippy::empty_docs)]
 pub mod mode;
 
 mod flags;
@@ -28,7 +27,6 @@ pub(crate) use flags::at_rest;
 pub use flags::Flags;
 
 ///
-#[allow(clippy::empty_docs)]
 pub mod stat;
 mod write;
 
@@ -36,7 +34,7 @@ use bitflags::bitflags;
 
 bitflags! {
     /// The kind of file of an entry.
-    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
     pub struct Mode: u32 {
         /// directory (only used for sparse checkouts), equivalent to a tree, which is _excluded_ from the index via
         /// cone-mode.

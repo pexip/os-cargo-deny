@@ -1,3 +1,11 @@
+#![cfg(target_pointer_width = "64")]
+
+//! Note we only run these tests if _built_ for 64-bit, as the only test targets
+//! this project cares about are 64 bit, and the issue is that, to match cargo
+//! we need to calculate the hash of the index the same, the rub is that when
+//! running a 32-bit target (eg. i686) on a 64-bit host where the cargo on the
+//! host is built for the 64-bit target as well, the local directories won't match
+
 mod utils;
 
 use tame_index::{index::cache::ValidCacheEntry, utils::get_index_details, IndexCache};
@@ -9,7 +17,8 @@ use tame_index::{index::cache::ValidCacheEntry, utils::get_index_details, IndexC
 /// you do that, that is your fault.
 #[test]
 fn parses_current_cargo_cache() {
-    let (path, _url) = get_index_details(tame_index::CRATES_IO_HTTP_INDEX, None).unwrap();
+    let stable = tame_index::utils::cargo_version(None).unwrap() >= semver::Version::new(1, 85, 0);
+    let (path, _url) = get_index_details(tame_index::CRATES_IO_HTTP_INDEX, None, stable).unwrap();
     let cache = IndexCache::at_path(path);
     let lock = &utils::unlocked();
 
@@ -48,7 +57,8 @@ fn parses_current_cargo_cache() {
 /// Validates we can write cache files the exact same as the current version of cargo
 #[test]
 fn serializes_current_cargo_cache() {
-    let (path, _url) = get_index_details(tame_index::CRATES_IO_HTTP_INDEX, None).unwrap();
+    let stable = tame_index::utils::cargo_version(None).unwrap() >= semver::Version::new(1, 85, 0);
+    let (path, _url) = get_index_details(tame_index::CRATES_IO_HTTP_INDEX, None, stable).unwrap();
     let cache = IndexCache::at_path(path);
     let lock = &utils::unlocked();
 

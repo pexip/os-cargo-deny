@@ -1,10 +1,8 @@
 //! Package dependencies
 
 #[cfg(feature = "dependency-tree")]
-#[cfg_attr(docsrs, doc(cfg(feature = "dependency-tree")))]
 pub mod graph;
 #[cfg(feature = "dependency-tree")]
-#[cfg_attr(docsrs, doc(cfg(feature = "dependency-tree")))]
 pub mod tree;
 
 #[cfg(feature = "dependency-tree")]
@@ -40,7 +38,7 @@ impl fmt::Display for Dependency {
         write!(f, "{} {}", &self.name, &self.version)?;
 
         if let Some(source) = &self.source {
-            write!(f, " ({})", source)?;
+            write!(f, " ({source})")?;
         }
 
         Ok(())
@@ -53,7 +51,10 @@ impl From<&Package> for Dependency {
         Self {
             name: pkg.name.clone(),
             version: pkg.version.clone(),
-            source: pkg.source.clone(),
+            source: pkg
+                .source
+                .clone()
+                .map(|x| x.normalize_git_source_for_dependency()),
         }
     }
 }

@@ -257,9 +257,8 @@ impl RemoteGitIndex {
             .try_into_commit()?
             .tree()?;
 
-        let mut buf = Vec::new();
         let Some(entry) = tree
-            .lookup_entry_by_path(path, &mut buf)
+            .lookup_entry_by_path(path)
             .map_err(|err| GitError::BlobLookup(Box::new(err)))?
         else {
             return Ok(None);
@@ -352,12 +351,12 @@ impl RemoteGitIndex {
 
         let mut config = self.repo.config_snapshot_mut();
         config
-            .set_raw_value("committer", None, "name", "tame-index")
+            .set_raw_value(&"committer.name", "tame-index")
             .map_err(GitError::from)?;
         // Note we _have_ to set the email as well, but luckily gix does not actually
         // validate if it's a proper email or not :)
         config
-            .set_raw_value("committer", None, "email", "")
+            .set_raw_value(&"committer.email", "")
             .map_err(GitError::from)?;
 
         let repo = config

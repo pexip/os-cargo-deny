@@ -89,23 +89,25 @@ impl Display for UnaffectedRange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.start {
             Bound::Unbounded => f.write_str("[0"),
-            Bound::Exclusive(v) => f.write_fmt(format_args!("({}", v)),
-            Bound::Inclusive(v) => f.write_fmt(format_args!("[{}", v)),
+            Bound::Exclusive(v) => f.write_fmt(format_args!("({v}")),
+            Bound::Inclusive(v) => f.write_fmt(format_args!("[{v}")),
         }?;
         f.write_str(", ")?;
         match &self.end {
             Bound::Unbounded => f.write_str("∞)"),
-            Bound::Exclusive(v) => f.write_fmt(format_args!("{})", v)),
-            Bound::Inclusive(v) => f.write_fmt(format_args!("{}]", v)),
+            Bound::Exclusive(v) => f.write_fmt(format_args!("{v})")),
+            Bound::Inclusive(v) => f.write_fmt(format_args!("{v}]")),
         }
     }
 }
 
 /// To keep the algorithm simple, we impose several constraints:
+///
 /// 1. There is at most one upper and at most one lower bound in each range.
 ///    Stuff like `>= 1.0, >= 2.0` is nonsense and is not supported.
 /// 2. If the requirement is "1.0" or "^1.0" that defines both the lower and upper bound,
 ///    it is the only one in its range.
+///
 /// If any of those constraints are unmet, an error will be returned.
 impl TryFrom<&semver::VersionReq> for UnaffectedRange {
     type Error = Error;

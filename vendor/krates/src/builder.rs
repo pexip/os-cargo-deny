@@ -2,8 +2,7 @@ pub(crate) mod features;
 
 pub mod index;
 
-use crate::{DepKind, Edge, Error, Kid, Krates};
-use cargo_metadata as cm;
+use crate::{DepKind, Edge, Error, Kid, Krates, MdTarget, cm};
 use features::{Feature, ParsedFeature};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -352,7 +351,7 @@ impl Builder {
         self.ignore_kinds |= match scope {
             Scope::Workspace => kind_flag << 1,
             Scope::NonWorkspace => kind_flag << 2,
-            Scope::All => kind_flag << 1 | kind_flag << 2,
+            Scope::All => (kind_flag << 1) | (kind_flag << 2),
         };
 
         self
@@ -568,7 +567,7 @@ impl Builder {
         on_filter: F,
     ) -> Result<Krates<N, E>, Error>
     where
-        N: From<cargo_metadata::Package>,
+        N: From<crate::Package>,
         E: From<Edge>,
         F: OnFilter,
     {
@@ -600,11 +599,11 @@ impl Builder {
     /// ```
     pub fn build_with_metadata<N, E, F>(
         self,
-        md: cargo_metadata::Metadata,
+        md: crate::Metadata,
         mut on_filter: F,
     ) -> Result<Krates<N, E>, Error>
     where
-        N: From<cargo_metadata::Package>,
+        N: From<crate::Package>,
         E: From<Edge>,
         F: OnFilter,
     {
@@ -663,11 +662,11 @@ impl Builder {
                 } else {
                     for wm in &workspace_members {
                         if let Ok(i) = packages.binary_search_by(|(id, _pkg)| id.cmp(wm)) {
-                            if self
-                                .workspace_filters
-                                .iter()
-                                .any(|wf| wf == &packages[i].1.manifest_path)
-                            {
+                            let mp = packages[i].1.manifest_path.as_std_path();
+                            let manifest_path = mp.canonicalize();
+
+                            let mp = manifest_path.as_deref().unwrap_or(mp);
+                            if self.workspace_filters.iter().any(|wf| wf == mp) {
                                 roots.insert(wm);
                             }
                         }
@@ -689,7 +688,7 @@ impl Builder {
         #[derive(Debug)]
         struct DepKindInfo {
             kind: DepKind,
-            cfg: Option<(String, cargo_platform::Platform)>,
+            cfg: Option<MdTarget>,
         }
 
         #[derive(Debug)]
@@ -730,6 +729,10 @@ impl Builder {
             }
         }
 
+        // We need to establish if the package ids are in the opaque or stable format as
+        // it changes how git sources are compared
+        let is_opaque = resolved.nodes[0].id.repr.splitn(3, ' ').count() == 3;
+
         let mut nodes: Vec<_> = resolved
             .nodes
             .into_iter()
@@ -752,7 +755,7 @@ impl Builder {
                             .into_iter()
                             .map(|dk| DepKindInfo {
                                 kind: dk.kind.into(),
-                                cfg: dk.target.map(|t| (t.to_string(), t)),
+                                cfg: dk.target.map(MdTarget::from),
                             })
                             .collect();
 
@@ -831,6 +834,7 @@ impl Builder {
             kind: DepKind,
             cfg: Option<String>,
             features: Vec<usize>,
+            dep_index: usize,
         }
 
         #[derive(Debug)]
@@ -872,7 +876,7 @@ impl Builder {
         }
 
         let check = |map: &BTreeMap<&Kid, KrateFeatures<'_>>, pid: &Kid, feature: Option<usize>| {
-            map.get(pid).map_or(false, |pn| {
+            map.get(pid).is_some_and(|pn| {
                 if let Some(feat) = feature {
                     pn.actual.contains(&feat)
                 } else {
@@ -1050,10 +1054,10 @@ impl Builder {
                     visit_stack.push((pid, None));
                 }
 
-                // This _should_ never fail in normal cases, however if the
-                // an index implementation is not provided, it's possible for
-                // the resolved features to mention features that aren't in
-                // the actual crate manifest
+                // This _should_ never fail in normal cases, however if an
+                // index implementation is not provided, it's possible for the
+                // resolved features to mention features that aren't in the
+                // actual crate manifest
                 let fs = if let Some(fs) = krate.features.get(rnode.feature(feature)) {
                     fs
                 } else {
@@ -1075,9 +1079,15 @@ impl Builder {
                         }
                     };
 
-                    let Some(ndep) = rnode.deps.iter().find(|rdep| {
-                        dep_names_match(krate_name, &rdep.name) || krate_name == rdep.pkg.name()
-                    }) else {
+                    // Note that we don't care about the package name here, as cargo
+                    // resolves feature by the manifest name for the package only, since
+                    // it's possible to have multiple versions of the same crate that
+                    // each need a unique name
+                    let Some(ndep) = rnode
+                        .deps
+                        .iter()
+                        .find(|rdep| dep_names_match(krate_name, &rdep.name))
+                    else {
                         // We can have a feature that points to a crate that isn't resolved by cargo due to it being
                         // a dev-only dependency
                         continue;
@@ -1134,6 +1144,7 @@ impl Builder {
                     kind: DepKind,
                     cfg: Option<&'d str>,
                     features: &'d [String],
+                    dep_index: usize,
                     uses_default_features: bool,
                 }
 
@@ -1165,7 +1176,7 @@ impl Builder {
                             DepKind::Build => 0x40,
                         };
 
-                        let mask = mask | mask << if is_in_workspace { 1 } else { 2 };
+                        let mask = mask | (mask << if is_in_workspace { 1 } else { 2 });
                         if mask & ignore_kinds == mask {
                             return None;
                         }
@@ -1189,13 +1200,14 @@ impl Builder {
                                 return false;
                             }
 
-                            dk.cfg.as_ref().map(|(_, p)| p) == dep.target.as_ref()
+                            crate::targets_eq(&dk.cfg, &dep.target)
                         }).count() > 1;
 
-                        let dep = krate
+                        let (dep_index, dep) = krate
                             .dependencies
                             .iter()
-                            .find(|dep| {
+                            .enumerate()
+                            .find(|(_, dep)| {
                                 if dk.kind != dep.kind {
                                     return false;
                                 }
@@ -1214,7 +1226,7 @@ impl Builder {
                                     return false;
                                 }
 
-                                if dk.cfg.as_ref().map(|(_, p)| p) != dep.target.as_ref() {
+                                if !crate::targets_eq(&dk.cfg, &dep.target) {
                                     return false;
                                 }
 
@@ -1229,12 +1241,17 @@ impl Builder {
                                 // encountered it in testing (eg. the `md-5` crate names its lib target `md5`, and you
                                 // can have a dependency on the `md5` crate, they both get resolved to the same name, but
                                 // then rustc can't compile `md5::compute` because there are two libs that satisfy that name)
-                                let source_matches = dep.source.as_deref().map_or(true, |dsrc| {
+                                let source_matches = dep.source.as_deref().is_none_or(|dsrc| {
                                     let psrc = rdep.pkg.source();
                                     if let Some((dgit, pgit)) = dsrc.strip_prefix("git+").zip(psrc.strip_prefix("git+")) {
-                                        // Git sources can have the full revision spec at the end, which is not part of
+                                        // The opaque git sources can have the full revision spec at the end, which is not part of
                                         // source declaration
-                                        let dgit = dgit.rfind('#').map_or(dgit, |end| &dgit[..end]);
+                                        let dgit = if is_opaque {
+                                            dgit.rfind('#').map_or(dgit, |end| &dgit[..end])
+                                        } else {
+                                            dgit
+                                        };
+
                                         dgit == pgit
                                     } else {
                                         dsrc == psrc
@@ -1249,51 +1266,42 @@ impl Builder {
                             return None;
                         }
 
-                        let cfg = if let Some(cfg) = dk.cfg.as_ref().map(|(c, _)| c.as_str()) {
+                        let cfg = if let Some(cfg) = &dk.cfg {
                             if !include_all_targets {
-                                let matched = if cfg.starts_with("cfg(") {
-                                    match cfg_expr::Expression::parse(cfg) {
-                                        Ok(expr) => {
-                                            // We only need to focus on target predicates because they are
-                                            // the only type of predicate allowed by cargo at the moment
+                                let matched = if let Some(expr) = &cfg.cfg {
+                                    // We only need to focus on target predicates because they are
+                                    // the only type of predicate allowed by cargo at the moment
 
-                                            // While it might be nicer to evaluate all the targets for each predicate
-                                            // it would lead to weird situations where an expression could evaluate to true
-                                            // (or false) with a combination of platform, that would otherwise be impossible,
-                                            // eg cfg(all(windows, target_env = "musl")) could evaluate to true
-                                            targets
-                                                .iter()
-                                                .any(|target| expr.eval(|pred| target.eval(pred)))
-                                        }
-                                        Err(_pe) => {
-                                            // TODO: maybe log a warning if we somehow fail to parse the cfg?
-                                            true
-                                        }
-                                    }
+                                    // While it might be nicer to evaluate all the targets for each predicate
+                                    // it would lead to weird situations where an expression could evaluate to true
+                                    // (or false) with a combination of platform, that would otherwise be impossible,
+                                    // eg cfg(all(windows, target_env = "musl")) could evaluate to true
+                                    targets
+                                        .iter()
+                                        .any(|target| expr.eval(|pred| target.eval(pred)))
                                 } else {
                                     // If it's not a cfg expression, it's just a fully specified target triple,
                                     // so we just do a string comparison
-                                    targets.iter().any(|target| target.matches_triple(cfg))
+                                    targets.iter().any(|target| target.matches_triple(&cfg.inner))
                                 };
 
                                 if !matched {
                                     return None;
                                 }
-                            } else if cfg.starts_with("cfg(") {
+                            } else if let Some(expr) = &cfg.cfg {
                                 // This is _basically_ a tortured way to evaluate `cfg(any())`, which is always false but
                                 // is used by eg. serde -> serde_derive. If not filtering targets this would mean that
                                 // serde_derive and all of its dependencies would be pulled into the graph, even if the
                                 // only edge was the cfg(any()).
-                                if let Ok(expr) = cfg_expr::Expression::parse(cfg) {
-                                    // We can't just do an eval and always return true, as that then would cause any
-                                    // not() expressions to evaluate to false
-                                    if expr.predicates().count() == 0 && !expr.eval(|_| true) {
-                                        return None;
-                                    }
+
+                                // We can't just do an eval and always return true, as that then would cause any
+                                // not() expressions to evaluate to false
+                                if expr.predicates().count() == 0 && !expr.eval(|_| true) {
+                                    return None;
                                 }
                             }
 
-                            Some(cfg)
+                            Some(cfg.inner.as_str())
                         } else {
                             None
                         };
@@ -1302,6 +1310,7 @@ impl Builder {
                             kind: dk.kind,
                             cfg,
                             features: &dep.features,
+                            dep_index,
                             // Dependencies will default to saying "uses_default_features" on edges,
                             // even if the crate in question doesn't actually have a "default" feature,
                             // so check that it actually does
@@ -1353,6 +1362,7 @@ impl Builder {
 
                         let edge = DependencyEdge {
                             kind: edge.kind,
+                            dep_index: edge.dep_index,
                             cfg: edge.cfg.map(|s| s.into()),
                             features,
                         };
@@ -1395,10 +1405,13 @@ impl Builder {
                         .collect()
                 };
 
+                let dep_mapping = vec![None; krate.dependencies.len()];
+
                 let krate = crate::Node::Krate {
                     id,
                     krate: N::from(krate),
                     features,
+                    dep_mapping,
                 };
 
                 graph.add_node(krate);
@@ -1528,6 +1541,10 @@ impl Builder {
                                     cfg: edge.cfg.clone(),
                                 },
                             );
+                        }
+
+                        if let crate::Node::Krate { dep_mapping, .. } = &mut graph[srcid] {
+                            dep_mapping[edge.dep_index] = Some(target_krate);
                         }
 
                         if attach_direct_edge {

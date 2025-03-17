@@ -18,11 +18,14 @@ allow = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "MIT",
-    "Unicode-DFS-2016",
+    "Unicode-3.0",
 ]
 
 [bans]
 multiple-versions = "deny"
+deny = [
+    { crate = "quinn", reason = "we don't need http3 support, this just ensures we aren't unneccessarily having http3 support actually (https://github.com/rust-lang/cargo/issues/10801) enabled" },
+]
 skip = []
 skip-tree = []
 

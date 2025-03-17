@@ -10,11 +10,7 @@ use rustsec::{
 use tempfile::tempdir;
 
 /// Happy path integration test (has online dependency on GitHub)
-///
-/// TODO: disabled because `cargo-edit` has unpatched vulnerabilities.
-/// However, the `rustsec` crate is not impacted by them
 #[test]
-#[cfg(feature = "fixme")] // TODO(tarcieri): re-enable this test
 fn happy_path() {
     let db = Database::load_from_repo(&git::Repository::fetch_default_repo().unwrap()).unwrap();
     verify_rustsec_2017_0001(&db);
@@ -23,7 +19,6 @@ fn happy_path() {
 
 /// End-to-end integration test (has online dependency on GitHub) which looks
 /// for the `RUSTSEC-2017-0001` vulnerability (`sodiumoxide` crate).
-#[allow(dead_code)] // TODO(tarcieri): fix `happy_path` test
 fn verify_rustsec_2017_0001(db: &Database) {
     let example_advisory_id = "RUSTSEC-2017-0001".parse::<advisory::Id>().unwrap();
     let example_advisory = db.get(&example_advisory_id).unwrap();
@@ -56,23 +51,12 @@ fn verify_rustsec_2017_0001(db: &Database) {
     let crate_advisories = db.query(&Query::new().package_name(example_package).year(2017));
     assert_eq!(example_advisory, crate_advisories[0]);
 
-    let lockfile = Lockfile::load("Cargo.lock").unwrap();
-    let vulns = db.vulnerabilities(&lockfile);
-
-    // TODO(tarcieri): find, file, and fix the version matching bug causing this
-    assert_eq!(
-        vulns
-            .iter()
-            .find(|v| !["RUSTSEC-2021-0055", "RUSTSEC-2021-0056"]
-                .iter()
-                .any(|id| v.advisory.id == id.parse().unwrap())),
-        None
-    );
+    let lockfile = Lockfile::load("../Cargo.lock").unwrap();
+    let _vulns = db.vulnerabilities(&lockfile);
 }
 
 /// End-to-end integration test (has online dependency on GitHub) which looks
 /// for the `CVE-2018-1000810` vulnerability (`std::str::repeat`)
-#[allow(dead_code)] // TODO(tarcieri): fix `happy_path` test
 fn verify_cve_2018_1000810(db: &Database) {
     let example_advisory_id = "CVE-2018-1000810".parse::<advisory::Id>().unwrap();
     let example_advisory = db.get(&example_advisory_id).unwrap();

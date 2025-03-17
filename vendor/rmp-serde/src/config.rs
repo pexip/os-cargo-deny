@@ -1,8 +1,4 @@
 //! Change MessagePack behavior with configuration wrappers.
-use rmp::encode;
-use serde::{Serialize, Serializer};
-
-use crate::encode::{Error, UnderlyingWrite};
 
 /// Represents configuration that dicatates what the serializer does.
 ///
@@ -12,78 +8,106 @@ pub trait SerializerConfig: sealed::SerializerConfig {}
 
 impl<T: sealed::SerializerConfig> SerializerConfig for T {}
 
-mod sealed {
-    use serde::{Serialize, Serializer};
+pub(crate) mod sealed {
+    use crate::config::BytesMode;
 
-    use crate::encode::{Error, UnderlyingWrite};
-
-    /// This is the inner trait - the real SerializerConfig.
+    /// This is the inner trait - the real `SerializerConfig`.
     ///
-    /// This hack disallows external implementations and usage of SerializerConfig and thus
-    /// allows us to change SerializerConfig methods freely without breaking backwards compatibility.
-    pub trait SerializerConfig {
-        fn write_struct_len<S>(ser: &mut S, len: usize) -> Result<(), Error>
-        where
-            S: UnderlyingWrite,
-            for<'a> &'a mut S: Serializer<Ok = (), Error = Error>;
+    /// This hack disallows external implementations and usage of `SerializerConfig` and thus
+    /// allows us to change `SerializerConfig` methods freely without breaking backwards compatibility.
+    pub trait SerializerConfig: Copy {
+        /// Determines the value of `Serializer::is_human_readable` and
+        /// `Deserializer::is_human_readable`.
+        fn is_human_readable(&self) -> bool;
 
-        fn write_struct_field<S, T>(ser: &mut S, key: &'static str, value: &T) -> Result<(), Error>
-        where
-            S: UnderlyingWrite,
-            for<'a> &'a mut S: Serializer<Ok = (), Error = Error>,
-            T: ?Sized + Serialize;
-
-        /// Encodes an enum variant ident (id or name) according to underlying writer.
-        ///
-        /// Used in `Serializer::serialize_*_variant` methods.
-        fn write_variant_ident<S>(
-            ser: &mut S,
-            variant_index: u32,
-            variant: &'static str,
-        ) -> Result<(), Error>
-        where
-            S: UnderlyingWrite,
-            for<'a> &'a mut S: Serializer<Ok = (), Error = Error>;
+        /// String struct fields
+        fn is_named(&self) -> bool;
+        fn bytes(&self) -> BytesMode;
     }
 }
 
-/// The default serializer configuration.
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct RuntimeConfig {
+    pub(crate) is_human_readable: bool,
+    pub(crate) is_named: bool,
+    pub(crate) bytes: BytesMode,
+}
+
+/// When to encode `[u8]` as `bytes` rather than a sequence
+/// of integers. Serde without `serde_bytes` has trouble
+/// using `bytes`, and this is hack to force it. It may
+/// break some data types.
+#[non_exhaustive]
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
+pub enum BytesMode {
+    /// Use bytes only when Serde requires it
+    /// (typically only when `serde_bytes` is used)
+    #[default]
+    Normal,
+    /// Use bytes for slices, `Vec`, and a few other types that
+    /// use `Iterator` in Serde.
+    ///
+    /// This may break some implementations of `Deserialize`.
+    ///
+    /// This does not include fixed-length arrays.
+    ForceIterables,
+    /// Use bytes for everything that looks like a container of `u8`.
+    /// This breaks some implementations of `Deserialize`.
+    ForceAll,
+}
+
+impl RuntimeConfig {
+    pub(crate) fn new(other: impl sealed::SerializerConfig) -> Self {
+        Self {
+            is_human_readable: other.is_human_readable(),
+            is_named: other.is_named(),
+            bytes: other.bytes(),
+        }
+    }
+}
+
+impl sealed::SerializerConfig for RuntimeConfig {
+    #[inline]
+    fn is_human_readable(&self) -> bool {
+        self.is_human_readable
+    }
+
+    #[inline]
+    fn is_named(&self) -> bool {
+        self.is_named
+    }
+
+    #[inline]
+    fn bytes(&self) -> BytesMode {
+        self.bytes
+    }
+}
+
+/// The default serializer/deserializer configuration.
 ///
-/// This writes structs as a tuple, without field names, and enum variants as integers.
+/// This configuration:
+/// - Writes structs as a tuple, without field names
+/// - Writes enum variants as integers
+/// - Writes and reads types as binary, not human-readable
+//
 /// This is the most compact representation.
 #[derive(Copy, Clone, Debug)]
 pub struct DefaultConfig;
 
 impl sealed::SerializerConfig for DefaultConfig {
-    fn write_struct_len<S>(ser: &mut S, len: usize) -> Result<(), Error>
-    where
-        S: UnderlyingWrite,
-        for<'a> &'a mut S: Serializer<Ok = (), Error = Error>,
-    {
-        encode::write_array_len(ser.get_mut(), len as u32)?;
-
-        Ok(())
+    #[inline(always)]
+    fn is_named(&self) -> bool {
+        false
     }
 
-    fn write_struct_field<S, T>(ser: &mut S, _key: &'static str, value: &T) -> Result<(), Error>
-    where
-        S: UnderlyingWrite,
-        for<'a> &'a mut S: Serializer<Ok = (), Error = Error>,
-        T: ?Sized + Serialize,
-    {
-        value.serialize(ser)
+    #[inline(always)]
+    fn is_human_readable(&self) -> bool {
+        false
     }
 
-    fn write_variant_ident<S>(
-        ser: &mut S,
-        variant_index: u32,
-        _variant: &'static str,
-    ) -> Result<(), Error>
-    where
-        S: UnderlyingWrite,
-        for<'a> &'a mut S: Serializer<Ok = (), Error = Error>,
-    {
-        ser.serialize_u32(variant_index)
+    #[inline(always)]
+    fn bytes(&self) -> BytesMode {
+        BytesMode::default()
     }
 }
 
@@ -99,6 +123,7 @@ pub struct StructMapConfig<C>(C);
 
 impl<C> StructMapConfig<C> {
     /// Creates a `StructMapConfig` inheriting unchanged configuration options from the given configuration.
+    #[inline]
     pub fn new(inner: C) -> Self {
         StructMapConfig(inner)
     }
@@ -108,36 +133,18 @@ impl<C> sealed::SerializerConfig for StructMapConfig<C>
 where
     C: sealed::SerializerConfig,
 {
-    fn write_struct_len<S>(ser: &mut S, len: usize) -> Result<(), Error>
-    where
-        S: UnderlyingWrite,
-        for<'a> &'a mut S: Serializer<Ok = (), Error = Error>,
-    {
-        encode::write_map_len(ser.get_mut(), len as u32)?;
-
-        Ok(())
+    #[inline(always)]
+    fn is_named(&self) -> bool {
+        true
     }
 
-    fn write_struct_field<S, T>(ser: &mut S, key: &'static str, value: &T) -> Result<(), Error>
-    where
-        S: UnderlyingWrite,
-        for<'a> &'a mut S: Serializer<Ok = (), Error = Error>,
-        T: ?Sized + Serialize,
-    {
-        encode::write_str(ser.get_mut(), key)?;
-        value.serialize(ser)
+    #[inline(always)]
+    fn is_human_readable(&self) -> bool {
+        self.0.is_human_readable()
     }
 
-    fn write_variant_ident<S>(
-        ser: &mut S,
-        variant_index: u32,
-        variant: &'static str,
-    ) -> Result<(), Error>
-    where
-        S: UnderlyingWrite,
-        for<'a> &'a mut S: Serializer<Ok = (), Error = Error>,
-    {
-        C::write_variant_ident(ser, variant_index, variant)
+    fn bytes(&self) -> BytesMode {
+        self.0.bytes()
     }
 }
 
@@ -148,6 +155,7 @@ pub struct StructTupleConfig<C>(C);
 
 impl<C> StructTupleConfig<C> {
     /// Creates a `StructTupleConfig` inheriting unchanged configuration options from the given configuration.
+    #[inline]
     pub fn new(inner: C) -> Self {
         StructTupleConfig(inner)
     }
@@ -157,127 +165,81 @@ impl<C> sealed::SerializerConfig for StructTupleConfig<C>
 where
     C: sealed::SerializerConfig,
 {
-    fn write_struct_len<S>(ser: &mut S, len: usize) -> Result<(), Error>
-    where
-        S: UnderlyingWrite,
-        for<'a> &'a mut S: Serializer<Ok = (), Error = Error>,
-    {
-        encode::write_array_len(ser.get_mut(), len as u32)?;
-
-        Ok(())
+    #[inline(always)]
+    fn is_named(&self) -> bool {
+        false
     }
 
-    fn write_struct_field<S, T>(ser: &mut S, _key: &'static str, value: &T) -> Result<(), Error>
-    where
-        S: UnderlyingWrite,
-        for<'a> &'a mut S: Serializer<Ok = (), Error = Error>,
-        T: ?Sized + Serialize,
-    {
-        value.serialize(ser)
+    #[inline(always)]
+    fn is_human_readable(&self) -> bool {
+        self.0.is_human_readable()
     }
 
-    fn write_variant_ident<S>(
-        ser: &mut S,
-        variant_index: u32,
-        variant: &'static str,
-    ) -> Result<(), Error>
-    where
-        S: UnderlyingWrite,
-        for<'a> &'a mut S: Serializer<Ok = (), Error = Error>,
-    {
-        C::write_variant_ident(ser, variant_index, variant)
+    fn bytes(&self) -> BytesMode {
+        self.0.bytes()
     }
 }
 
-/// Config wrapper, that overrides enum serialization by serializing enum variant names as strings.
-///
-/// Default `Serializer` implementation writes enum names as integers, i.e. only indices are encoded,
-/// because it is the most compact representation.
+/// Config wrapper that overrides `Serializer::is_human_readable` and
+/// `Deserializer::is_human_readable` to return `true`.
 #[derive(Copy, Clone, Debug)]
-pub struct VariantStringConfig<C>(C);
+pub struct HumanReadableConfig<C>(C);
 
-impl<C> VariantStringConfig<C> {
-    /// Creates a `VariantStringConfig` inheriting unchanged configuration options from the given configuration.
+impl<C> HumanReadableConfig<C> {
+    /// Creates a `HumanReadableConfig` inheriting unchanged configuration options from the given configuration.
+    #[inline]
     pub fn new(inner: C) -> Self {
-        VariantStringConfig(inner)
+        Self(inner)
     }
 }
 
-impl<C> sealed::SerializerConfig for VariantStringConfig<C>
+impl<C> sealed::SerializerConfig for HumanReadableConfig<C>
 where
     C: sealed::SerializerConfig,
 {
-    fn write_struct_len<S>(ser: &mut S, len: usize) -> Result<(), Error>
-    where
-        S: UnderlyingWrite,
-        for<'a> &'a mut S: Serializer<Ok = (), Error = Error>,
-    {
-        C::write_struct_len(ser, len)
+    #[inline(always)]
+    fn is_named(&self) -> bool {
+        self.0.is_named()
     }
 
-    fn write_struct_field<S, T>(ser: &mut S, key: &'static str, value: &T) -> Result<(), Error>
-    where
-        S: UnderlyingWrite,
-        for<'a> &'a mut S: Serializer<Ok = (), Error = Error>,
-        T: ?Sized + Serialize,
-    {
-        C::write_struct_field(ser, key, value)
+    #[inline(always)]
+    fn is_human_readable(&self) -> bool {
+        true
     }
 
-    fn write_variant_ident<S>(
-        ser: &mut S,
-        _variant_index: u32,
-        variant: &'static str,
-    ) -> Result<(), Error>
-    where
-        S: UnderlyingWrite,
-        for<'a> &'a mut S: Serializer<Ok = (), Error = Error>,
-    {
-        ser.serialize_str(variant)
+    fn bytes(&self) -> BytesMode {
+        self.0.bytes()
     }
 }
 
-/// Config wrapper that overrides enum variant serialization by packing enum names as their integer indices.
+/// Config wrapper that overrides `Serializer::is_human_readable` and
+/// `Deserializer::is_human_readable` to return `false`.
 #[derive(Copy, Clone, Debug)]
-pub struct VariantIntegerConfig<C>(C);
+pub struct BinaryConfig<C>(C);
 
-impl<C> VariantIntegerConfig<C> {
-    /// Creates a `VariantIntegerConfig` inheriting unchanged configuration options from the given configuration.
+impl<C> BinaryConfig<C> {
+    /// Creates a `BinaryConfig` inheriting unchanged configuration options from the given configuration.
+    #[inline(always)]
     pub fn new(inner: C) -> Self {
-        VariantIntegerConfig(inner)
+        Self(inner)
     }
 }
 
-impl<C> sealed::SerializerConfig for VariantIntegerConfig<C>
+impl<C> sealed::SerializerConfig for BinaryConfig<C>
 where
     C: sealed::SerializerConfig,
 {
-    fn write_struct_len<S>(ser: &mut S, len: usize) -> Result<(), Error>
-    where
-        S: UnderlyingWrite,
-        for<'a> &'a mut S: Serializer<Ok = (), Error = Error>,
-    {
-        C::write_struct_len(ser, len)
+    #[inline(always)]
+    fn is_named(&self) -> bool {
+        self.0.is_named()
     }
 
-    fn write_struct_field<S, T>(ser: &mut S, key: &'static str, value: &T) -> Result<(), Error>
-    where
-        S: UnderlyingWrite,
-        for<'a> &'a mut S: Serializer<Ok = (), Error = Error>,
-        T: ?Sized + Serialize,
-    {
-        C::write_struct_field(ser, key, value)
+    #[inline(always)]
+    fn is_human_readable(&self) -> bool {
+        false
     }
 
-    fn write_variant_ident<S>(
-        ser: &mut S,
-        variant_index: u32,
-        _variant: &'static str,
-    ) -> Result<(), Error>
-    where
-        S: UnderlyingWrite,
-        for<'a> &'a mut S: Serializer<Ok = (), Error = Error>,
-    {
-        ser.serialize_u32(variant_index)
+    fn bytes(&self) -> BytesMode {
+        self.0.bytes()
     }
 }

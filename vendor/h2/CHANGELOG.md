@@ -1,3 +1,23 @@
+# 0.4.8 (February 18, 2025)
+
+* Fix handling implicit stream resets at the more correct time.
+* Fix window size decrements of send-closed streams.
+* Fix reclaiming of reserved capacity when streams are closed.
+* Fix to no longer call `poll_flush` after `poll_shutdown`.
+* Fix busy loop in task when poll_shutdown returns pending.
+
+# 0.4.7 (November 19, 2024)
+
+* Fix treating HEADERS frames with a non-zero content-length but END_STREAM flag as malformed.
+* Fix notifying the stream task when automatically reset on receipt of a stream error.
+
+# 0.4.6 (August 19, 2024)
+
+* Add `current_max_send_streams()` and `current_max_recv_streams()` to `client::SendRequest`.
+* Fix sending a PROTOCOL_ERROR instead of REFUSED_STREAM when receiving oversized headers.
+* Fix notifying a PushPromise task properly.
+* Fix notifying a stream task when reset.
+
 # 0.4.5 (May 17, 2024)
 
 * Fix race condition that sometimes hung connections during shutdown.

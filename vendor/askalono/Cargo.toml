@@ -10,10 +10,11 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
-edition = "2018"
+edition = "2021"
 name = "askalono"
-version = "0.4.6"
+version = "0.5.0"
 authors = ["Jacob Peddicord <jacob@peddicord.net>"]
+build = false
 include = [
     "/Cargo.toml",
     "/examples/**/*",
@@ -22,6 +23,10 @@ include = [
     "/README.md",
     "/src/**/*",
 ]
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
 description = "a library to detect the contents of license files"
 readme = "README.md"
 license = "Apache-2.0"
@@ -30,6 +35,14 @@ repository = "https://github.com/jpeddicord/askalono"
 [lib]
 name = "askalono"
 path = "src/lib.rs"
+
+[[example]]
+name = "annotate-text"
+path = "examples/annotate-text.rs"
+
+[[example]]
+name = "basic"
+path = "examples/basic.rs"
 
 [dependencies.anyhow]
 version = "1.0.44"
@@ -44,7 +57,7 @@ version = "0.4.6"
 version = "1.1.7"
 
 [dependencies.rmp-serde]
-version = "0.14.0"
+version = "1.1.1"
 
 [dependencies.serde]
 version = "1.0.92"
@@ -58,22 +71,22 @@ optional = true
 version = "0.1.8"
 
 [dev-dependencies.env_logger]
-version = "0.7"
+version = "0.11"
 
 [features]
 default = ["spdx"]
 gzip = ["flate2"]
 spdx = ["serde_json"]
 
-[target."cfg(not(target_arch = \"wasm32\"))".dependencies.flate2]
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies.flate2]
 version = "1.0.14"
 optional = true
 
-[target."cfg(not(target_arch = \"wasm32\"))".dependencies.rayon]
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies.rayon]
 version = "1.2"
 
-[target."cfg(not(target_arch = \"wasm32\"))".dependencies.zstd]
-version = "0.11"
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies.zstd]
+version = "0.13"
 
-[target."cfg(target_arch = \"wasm32\")".dependencies.flate2]
+[target.'cfg(target_arch = "wasm32")'.dependencies.flate2]
 version = "1.0.14"

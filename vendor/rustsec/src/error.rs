@@ -117,12 +117,6 @@ pub enum ErrorKind {
     #[error("bad parameter")]
     BadParam,
 
-    /// Error performing an automatic fix
-    #[cfg(feature = "fix")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "fix")))]
-    #[error("fix failed")]
-    Fix,
-
     /// An error occurred performing an I/O operation (e.g. network, file)
     #[error("I/O operation failed")]
     Io,
@@ -204,7 +198,7 @@ impl Error {
     /// This is used so rarely that there is no need to `impl From`,
     /// and this way we can avoid leaking it into the public API.
     pub(crate) fn from_toml(other: toml::de::Error) -> Self {
-        format_err!(crate::ErrorKind::Parse, &other)
+        format_err!(ErrorKind::Parse, &other)
     }
 }
 

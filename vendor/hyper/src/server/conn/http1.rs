@@ -69,6 +69,7 @@ pin_project_lite::pin_project! {
 /// to bind the built connection to a service.
 #[derive(Clone, Debug)]
 pub struct Builder {
+    h1_parser_config: httparse::ParserConfig,
     timer: Time,
     h1_half_close: bool,
     h1_keep_alive: bool,
@@ -79,6 +80,7 @@ pub struct Builder {
     h1_writev: Option<bool>,
     max_buf_size: Option<usize>,
     pipeline_flush: bool,
+    date_header: bool,
 }
 
 /// Deconstructed parts of a `Connection`.
@@ -165,7 +167,6 @@ where
     where
         S: Unpin,
         S::Future: Unpin,
-        B: Unpin,
     {
         self.conn.poll_without_shutdown(cx)
     }
@@ -176,12 +177,7 @@ where
     /// # Error
     ///
     /// This errors if the underlying connection protocol is not HTTP/1.
-    pub fn without_shutdown(self) -> impl Future<Output = crate::Result<Parts<I, S>>>
-    where
-        S: Unpin,
-        S::Future: Unpin,
-        B: Unpin,
-    {
+    pub fn without_shutdown(self) -> impl Future<Output = crate::Result<Parts<I, S>>> {
         let mut zelf = Some(self);
         futures_util::future::poll_fn(move |cx| {
             ready!(zelf.as_mut().unwrap().conn.poll_without_shutdown(cx))?;
@@ -236,6 +232,7 @@ impl Builder {
     /// Create a new connection builder.
     pub fn new() -> Self {
         Self {
+            h1_parser_config: Default::default(),
             timer: Time::Empty,
             h1_half_close: false,
             h1_keep_alive: true,
@@ -246,6 +243,7 @@ impl Builder {
             h1_writev: None,
             max_buf_size: None,
             pipeline_flush: false,
+            date_header: true,
         }
     }
     /// Set whether HTTP/1 connections should support half-closures.
@@ -275,6 +273,19 @@ impl Builder {
     /// Default is false.
     pub fn title_case_headers(&mut self, enabled: bool) -> &mut Self {
         self.h1_title_case_headers = enabled;
+        self
+    }
+
+    /// Set whether HTTP/1 connections will silently ignored malformed header lines.
+    ///
+    /// If this is enabled and a header line does not start with a valid header
+    /// name, or does not include a colon at all, the line will be silently ignored
+    /// and no error will be reported.
+    ///
+    /// Default is false.
+    pub fn ignore_invalid_headers(&mut self, enabled: bool) -> &mut Builder {
+        self.h1_parser_config
+            .ignore_invalid_headers_in_requests(enabled);
         self
     }
 
@@ -359,6 +370,16 @@ impl Builder {
         self
     }
 
+    /// Set whether the `date` header should be included in HTTP responses.
+    ///
+    /// Note that including the `date` header is recommended by RFC 7231.
+    ///
+    /// Default is true.
+    pub fn auto_date_header(&mut self, enabled: bool) -> &mut Self {
+        self.date_header = enabled;
+        self
+    }
+
     /// Aggregates flushes to better support pipelined responses.
     ///
     /// Experimental, may have bugs.
@@ -420,6 +441,7 @@ impl Builder {
         I: Read + Write + Unpin,
     {
         let mut conn = proto::Conn::new(io);
+        conn.set_h1_parser_config(self.h1_parser_config.clone());
         conn.set_timer(self.timer.clone());
         if !self.h1_keep_alive {
             conn.disable_keep_alive();
@@ -452,6 +474,9 @@ impl Builder {
         conn.set_flush_pipeline(self.pipeline_flush);
         if let Some(max) = self.max_buf_size {
             conn.set_max_buf_size(max);
+        }
+        if !self.date_header {
+            conn.disable_date_header();
         }
         let sd = proto::h1::dispatch::Server::new(service);
         let proto = proto::h1::Dispatcher::new(sd, conn);

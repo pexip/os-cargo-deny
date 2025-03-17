@@ -1,4 +1,5 @@
-#![cfg(feature = "git")]
+#![allow(missing_docs)]
+#![cfg(feature = "__git")]
 
 mod utils;
 use tame_index::{
@@ -13,6 +14,7 @@ fn remote_index(
         GitIndex::new(IndexLocation {
             url: IndexUrl::NonCratesIo(url.as_ref().as_str().into()),
             root: IndexPath::Exact(path.as_ref().join("sub/dir")),
+            cargo_version: None,
         })
         .unwrap(),
         &utils::unlocked(),
@@ -147,7 +149,7 @@ impl TreeUpdateBuilder {
 ///
 /// 1. Using the crates.io git registry. It's massive and slow.
 /// 2. Using some other external git registry, could fail for any number of
-/// network etc related issues
+///     network etc related issues
 /// 3. Needing to maintain a blessed remote of any kind
 struct FakeRemote {
     repo: gix::Repository,
@@ -166,7 +168,7 @@ impl FakeRemote {
         // Create an empty initial commit so we always have _something_
         let parent = {
             let empty_tree_id = repo
-                .write_object(&gix::objs::Tree::empty())
+                .write_object(gix::objs::Tree::empty())
                 .unwrap()
                 .detach();
 
@@ -193,22 +195,20 @@ impl FakeRemote {
     fn snapshot(repo: &mut gix::Repository) -> gix::config::CommitAutoRollback<'_> {
         let mut config = repo.config_snapshot_mut();
         config
-            .set_raw_value("author", None, "name", "Integration Test")
+            .set_raw_value(&"author.name", "Integration Test")
             .unwrap();
         config
-            .set_raw_value("committer", None, "name", "Integration Test")
+            .set_raw_value(&"committer.name", "Integration Test")
             .unwrap();
         config
-            .set_raw_value("author", None, "email", "tests@integration.se")
+            .set_raw_value(&"author.email", "tests@integration.se")
             .unwrap();
         config
-            .set_raw_value("committer", None, "email", "tests@integration.se")
+            .set_raw_value(&"committer.email", "tests@integration.se")
             .unwrap();
 
         // Disable GPG signing, it breaks testing if the user has it enabled
-        config
-            .set_raw_value("commit", None, "gpgsign", "false")
-            .unwrap();
+        config.set_raw_value(&"commit.gpgsign", "false").unwrap();
 
         config.commit_auto_rollback().unwrap()
     }
@@ -483,7 +483,7 @@ fn non_main_local_branch() {
         let commit = {
             let snap = FakeRemote::snapshot(&mut repo);
             let empty_tree_id = snap
-                .write_object(&gix::objs::Tree::empty())
+                .write_object(gix::objs::Tree::empty())
                 .unwrap()
                 .detach();
 
@@ -507,7 +507,7 @@ fn non_main_local_branch() {
                         message: "".into(),
                     },
                     expected: tx::PreviousValue::Any,
-                    new: gix::refs::Target::Peeled(commit),
+                    new: gix::refs::Target::Object(commit),
                 },
                 name: "refs/heads/master".try_into().unwrap(),
                 deref: false,

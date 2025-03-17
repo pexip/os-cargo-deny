@@ -8,6 +8,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- next-header -->
 ## [Unreleased] - ReleaseDate
+## [0.18.1] - 2025-02-27
+### Fixed
+- [PR#101](https://github.com/EmbarkStudios/krates/pull/101) resolved [#100](https://github.com/EmbarkStudios/krates/issues/100) by correctly swallowing unknown fields for the various objects in a metadata dump.
+
+## [0.18.0] - 2025-02-24
+### Changed
+- [PR#99](https://github.com/EmbarkStudios/krates/pull/99) updated to edition 2024.
+- [PR#99](https://github.com/EmbarkStudios/krates/pull/99) changed from using `serde_derive` to manual deserialization.
+
+### Added
+- [PR#99](https://github.com/EmbarkStudios/krates/pull/99) added support for serialization of metadata gated behind the `serialize` feature.
+
+## [0.17.5] - 2024-11-14
+### Fixed
+- [PR#98](https://github.com/EmbarkStudios/krates/pull/98) resolved [#84](https://github.com/EmbarkStudios/krates/issues/84) and [#97](https://github.com/EmbarkStudios/krates/issues/97) by resolving `<crate>/<feature>` references to the correct crate in all cases, as it could have resolved to a crate with the same name but different version/feature set previously.
+
+## [0.17.4] - 2024-11-14
+### Fixed
+- [PR#96](https://github.com/EmbarkStudios/krates/pull/96) fixed an issue where package specs didn't allow the `@` separator, resolving [cargo-deny#717](https://github.com/EmbarkStudios/cargo-deny/issues/717).
+
+## [0.17.3] - 2024-11-11
+### Fixed
+- [PR#94](https://github.com/EmbarkStudios/krates/pull/94) fixed an issue with canonical path mismatches (I presume on Windows). Thanks [@Tastaturtaste](http://github.com/Tastaturtaste)!
+
+### Added
+- [PR#95](https://github.com/EmbarkStudios/krates/pull/95) added the 2024 variant so that edition 2024 (unstable) crates don't fail to be parsed from cargo-metadata. Thanks [@kpcyrd](http://github.com/kpcyrd)!
+
+## [0.17.2] - 2024-09-20
+### Changed
+- [PR#93](https://github.com/EmbarkStudios/krates/pull/93) updated crates.
+
+## [0.17.1] - 2024-08-02
+### Changed
+- [PR#92](https://github.com/EmbarkStudios/krates/pull/92) updated crates.
+
+## [0.17.0] - 2024-06-26
+### Added
+- [PR#90](https://github.com/EmbarkStudios/krates/pull/90) added `Krates::resolved_dependency` to get the `Krate` (if any) that was resolved for a `Package`'s `Dependency`.
+
+### Fixed
+- [PR#86](https://github.com/EmbarkStudios/krates/pull/86) and [PR#87](https://github.com/EmbarkStudios/krates/pull/87) resolved [#85](https://github.com/EmbarkStudios/krates/issues/85) caused by the stable package format URL-encoding query parameters, unlike the old opaque format, causing `krates` to be unable to resolve dependencies to the appropriate crate node.
+
+### Changed
+- [PR#90](https://github.com/EmbarkStudios/krates/pull/90) made `cargo_metadata` optional, if not selected types internal to this crate are used (and exported) instead. The types are currently mostly the same, but this might change in the future.
+
 ## [0.16.10] - 2024-04-12
 ### Fixed
 - [PR#83](https://github.com/EmbarkStudios/krates/pull/83) resolved [#82](https://github.com/EmbarkStudios/krates/issues/82) by properly handling `cfg()` specific dependencies for the same crate with different features enabled.
@@ -205,7 +250,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial implementation
 
 <!-- next-url -->
-[Unreleased]: https://github.com/EmbarkStudios/krates/compare/0.16.10...HEAD
+[Unreleased]: https://github.com/EmbarkStudios/krates/compare/0.18.1...HEAD
+[0.18.1]: https://github.com/EmbarkStudios/krates/compare/0.18.0...0.18.1
+[0.18.0]: https://github.com/EmbarkStudios/krates/compare/0.17.5...0.18.0
+[0.17.5]: https://github.com/EmbarkStudios/krates/compare/0.17.4...0.17.5
+[0.17.4]: https://github.com/EmbarkStudios/krates/compare/0.17.3...0.17.4
+[0.17.3]: https://github.com/EmbarkStudios/krates/compare/0.17.2...0.17.3
+[0.17.2]: https://github.com/EmbarkStudios/krates/compare/0.17.1...0.17.2
+[0.17.1]: https://github.com/EmbarkStudios/krates/compare/0.17.0...0.17.1
+[0.17.0]: https://github.com/EmbarkStudios/krates/compare/0.16.10...0.17.0
 [0.16.10]: https://github.com/EmbarkStudios/krates/compare/0.16.9...0.16.10
 [0.16.9]: https://github.com/EmbarkStudios/krates/compare/0.16.8...0.16.9
 [0.16.8]: https://github.com/EmbarkStudios/krates/compare/0.16.7...0.16.8
