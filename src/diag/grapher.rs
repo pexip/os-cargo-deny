@@ -281,18 +281,20 @@ pub fn diag_to_json(
         for gn in diag.graph_nodes {
             if let Ok(graph) =
                 grapher.build_graph(&gn, if diag.with_features { usize::MAX } else { 0 })
+                && let Ok(sgraph) = serde_json::value::to_value(graph)
             {
-                if let Ok(sgraph) = serde_json::value::to_value(graph) {
-                    graphs.push(sgraph);
-                }
+                graphs.push(sgraph);
             }
         }
 
         fields.insert("graphs".to_owned(), serde_json::Value::Array(graphs));
     }
 
-    if let Some((key, val)) = diag.extra {
-        fields.insert(key.to_owned(), val);
+    if let Some(extra) = diag.extra {
+        let key = extra.key();
+        if let Ok(val) = serde_json::to_value(extra) {
+            fields.insert(key.into(), val);
+        }
     }
 
     to_print
@@ -323,7 +325,7 @@ pub fn write_graph_as_text(root: &GraphNode) -> String {
             }
 
             let c = if last_continues { TEE } else { ELL };
-            write!(out, "{c}{0}{0} ", RGT).unwrap();
+            write!(out, "{c}{RGT}{RGT} ").unwrap();
         }
 
         match &node.inner {

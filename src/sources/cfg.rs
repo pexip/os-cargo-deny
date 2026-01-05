@@ -92,6 +92,9 @@ pub struct Config {
     /// The minimum specification required for git sources. Defaults to allowing
     /// any.
     pub required_git_spec: Option<Spanned<GitSpec>>,
+    /// Determines the response to sources in th `allow`ed list which do not
+    /// exist in the dependency tree.
+    pub unused_allowed_source: LintLevel,
 }
 
 impl<'de> Deserialize<'de> for Config {
@@ -106,6 +109,9 @@ impl<'de> Deserialize<'de> for Config {
         let allow_org = th.optional("allow-org").unwrap_or_default();
         let private = th.optional("private").unwrap_or_default();
         let required_git_spec = th.optional("required-git-spec");
+        let unused_allowed_source = th
+            .optional("unused-allowed-source")
+            .unwrap_or(LintLevel::Warn);
 
         th.finalize(None)?;
 
@@ -117,6 +123,7 @@ impl<'de> Deserialize<'de> for Config {
             allow_org,
             private,
             required_git_spec,
+            unused_allowed_source,
         })
     }
 }
@@ -131,6 +138,7 @@ impl Default for Config {
             allow_org: Orgs::default(),
             private: Vec::new(),
             required_git_spec: None,
+            unused_allowed_source: LintLevel::Warn,
         }
     }
 }
@@ -155,10 +163,10 @@ impl cfg::UnvalidatedConfig for Config {
             let astr = aurl.as_ref();
             let mut skip = 0;
 
-            if let Some(start_scheme) = astr.find("://") {
-                if let Some(i) = astr[..start_scheme].find('+') {
-                    skip = i + 1;
-                }
+            if let Some(start_scheme) = astr.find("://")
+                && let Some(i) = astr[..start_scheme].find('+')
+            {
+                skip = i + 1;
             }
 
             match url::Url::parse(&astr[skip..]) {
@@ -180,7 +188,7 @@ impl cfg::UnvalidatedConfig for Config {
                         Diagnostic::error()
                             .with_message("failed to parse url")
                             .with_labels(vec![
-                                Label::primary(ctx.cfg_id, aurl.span).with_message(pe.to_string()),
+                                Label::primary(ctx.cfg_id, aurl.span).with_message(pe),
                             ]),
                     );
                 }
@@ -213,6 +221,7 @@ impl cfg::UnvalidatedConfig for Config {
             allowed_sources,
             allowed_orgs,
             required_git_spec: self.required_git_spec,
+            unused_allowed_source: self.unused_allowed_source,
         }
     }
 }
@@ -235,6 +244,7 @@ pub struct ValidConfig {
     pub allowed_sources: Vec<UrlSource>,
     pub allowed_orgs: Vec<(OrgType, Spanned<String>)>,
     pub required_git_spec: Option<Spanned<GitSpec>>,
+    pub unused_allowed_source: LintLevel,
 }
 
 #[cfg(test)]

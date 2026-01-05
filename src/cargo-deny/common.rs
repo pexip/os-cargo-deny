@@ -109,6 +109,7 @@ impl KrateContext {
 
     pub fn gather_krates(
         self,
+        metadata: Option<krates::cm::Metadata>,
         cfg_targets: Vec<cargo_deny::root_cfg::Target>,
         cfg_excludes: Vec<String>,
     ) -> Result<cargo_deny::Krates, anyhow::Error> {
@@ -116,15 +117,19 @@ impl KrateContext {
         let start = std::time::Instant::now();
 
         log::debug!("gathering crate metadata");
-        let metadata = Self::get_metadata(MetadataOptions {
-            no_default_features: self.no_default_features,
-            all_features: self.all_features,
-            features: self.features,
-            manifest_path: self.manifest_path,
-            frozen: self.frozen,
-            locked: self.locked,
-            offline: self.offline,
-        })?;
+        let metadata = if let Some(md) = metadata {
+            md
+        } else {
+            Self::get_metadata(MetadataOptions {
+                no_default_features: self.no_default_features,
+                all_features: self.all_features,
+                features: self.features,
+                manifest_path: self.manifest_path,
+                frozen: self.frozen,
+                locked: self.locked,
+                offline: self.offline,
+            })?
+        };
         log::debug!(
             "gathered crate metadata in {}ms",
             start.elapsed().as_millis()
@@ -347,6 +352,7 @@ pub struct Json<'a> {
 enum OutputFormat<'a> {
     Human(Human<'a>),
     Json(Json<'a>),
+    Sarif,
 }
 
 impl<'a> OutputFormat<'a> {
@@ -359,6 +365,7 @@ impl<'a> OutputFormat<'a> {
                 human.feature_depth,
             ),
             Self::Json(json) => OutputLock::Json(json, max_severity, json.stream.lock()),
+            Self::Sarif => OutputLock::Sarif,
         }
     }
 }
@@ -392,6 +399,7 @@ pub enum OutputLock<'a, 'b> {
         Option<u32>,
     ),
     Json(&'a Json<'a>, Severity, StdLock<'b>),
+    Sarif,
 }
 
 impl OutputLock<'_, '_> {
@@ -402,7 +410,7 @@ impl OutputLock<'_, '_> {
                     return;
                 }
 
-                let _ = term::emit(l, &cfg.config, files, &diag);
+                let _ = term::emit_to_write_style(l, &cfg.config, files, &diag);
             }
             Self::Json(_cfg, max, w) => {
                 if diag.severity < *max {
@@ -419,6 +427,7 @@ impl OutputLock<'_, '_> {
                     let _ = w.write(b"\n");
                 }
             }
+            Self::Sarif => {} // SARIF collects diagnostics separately
         }
     }
 
@@ -455,7 +464,7 @@ impl OutputLock<'_, '_> {
                         }
                     }
 
-                    let _ = term::emit(l, &cfg.config, files, &diag.diag);
+                    let _ = term::emit_to_write_style(l, &cfg.config, files, &diag.diag);
                 }
             }
             Self::Json(cfg, max, w) => {
@@ -475,6 +484,7 @@ impl OutputLock<'_, '_> {
                     }
                 }
             }
+            Self::Sarif => {} // SARIF collects diagnostics separately
         }
     }
 }
@@ -521,6 +531,10 @@ impl<'a> DiagPrinter<'a> {
                     stream: StdioStream::Err(std::io::stderr()),
                     grapher: krates.map(diag::InclusionGrapher::new),
                 }),
+                max_severity,
+            },
+            crate::Format::Sarif => Self {
+                which: OutputFormat::Sarif,
                 max_severity,
             },
         })

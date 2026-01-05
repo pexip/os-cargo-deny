@@ -381,6 +381,30 @@ pub fn check(
     );
 
     let report_duplicates = |multi_detector: &mut MultiDetector<'_>, sink: &mut diag::ErrorSink| {
+        if multi_detector.dupes.len() != 1 {
+            // Filter out crates that depend on another version of themselves https://github.com/dtolnay/semver-trick
+            multi_detector.dupes.retain(|(index, _)| {
+                let krate = &ctx.krates[*index];
+
+                // We _could_ just see if this crate's dependencies is another
+                // version of itself, but that means if there are other versions
+                // of the crate then the version that is doing the trick is not
+                // reported, so we do the more expensive check for the direct
+                // dependents
+                let direct = ctx
+                    .krates
+                    .direct_dependents(ctx.krates.nid_for_kid(&krate.id).unwrap());
+
+                let res = !direct.iter().all(|dir| dir.krate.name == krate.name);
+
+                if !res {
+                    log::debug!("ignoring duplicate crate '{krate}', its only dependents was another version of itself");
+                }
+
+                res
+            });
+        }
+
         let skipped = multi_detector
             .dupes
             .iter()
@@ -672,14 +696,14 @@ pub fn check(
                     None
                 };
 
-                if let Some(ll) = default_lint_level {
-                    if ll.value == LintLevel::Warn {
-                        pack.push(diags::DefaultFeatureEnabled {
-                            krate,
-                            level: ll,
-                            file_id,
-                        });
-                    }
+                if let Some(ll) = default_lint_level
+                    && ll.value == LintLevel::Warn
+                {
+                    pack.push(diags::DefaultFeatureEnabled {
+                        krate,
+                        level: ll,
+                        file_id,
+                    });
                 }
 
                 // Check if the crate has had features denied/allowed or are required to be exact
@@ -693,12 +717,11 @@ pub fn check(
                                 .iter()
                                 .filter_map(|ef| {
                                     if !feature_bans.allow.value.iter().any(|af| &af.value == ef) {
-                                        if ef == "default" {
-                                            if let Some(ll) = default_lint_level {
-                                                if ll.value != LintLevel::Deny {
-                                                    return None;
-                                                }
-                                            }
+                                        if ef == "default"
+                                            && let Some(ll) = default_lint_level
+                                            && ll.value != LintLevel::Deny
+                                        {
+                                            return None;
                                         }
 
                                         Some(ef.as_str())
@@ -803,21 +826,20 @@ pub fn check(
                                 // the global span, otherwise the crate level setting,
                                 // if the default feature was banned explicitly, takes
                                 // precedence
-                                if let Some(ll) = default_lint_level {
-                                    if ll.value == LintLevel::Deny
-                                        && !feature_bans
-                                            .allow
-                                            .value
-                                            .iter()
-                                            .any(|d| d.value == "default")
-                                        && !feature_bans.deny.iter().any(|d| d.value == "default")
-                                    {
-                                        pack.push(diags::DefaultFeatureEnabled {
-                                            krate,
-                                            level: ll,
-                                            file_id,
-                                        });
-                                    }
+                                if let Some(ll) = default_lint_level
+                                    && ll.value == LintLevel::Deny
+                                    && !feature_bans
+                                        .allow
+                                        .value
+                                        .iter()
+                                        .any(|d| d.value == "default")
+                                    && !feature_bans.deny.iter().any(|d| d.value == "default")
+                                {
+                                    pack.push(diags::DefaultFeatureEnabled {
+                                        krate,
+                                        level: ll,
+                                        file_id,
+                                    });
                                 }
 
                                 for feature in feature_bans
@@ -859,14 +881,14 @@ pub fn check(
                             }
                         }
                     }
-                } else if let Some(ll) = default_lint_level {
-                    if ll.value == LintLevel::Deny {
-                        pack.push(diags::DefaultFeatureEnabled {
-                            krate,
-                            level: ll,
-                            file_id,
-                        });
-                    }
+                } else if let Some(ll) = default_lint_level
+                    && ll.value == LintLevel::Deny
+                {
+                    pack.push(diags::DefaultFeatureEnabled {
+                        krate,
+                        level: ll,
+                        file_id,
+                    });
                 }
 
                 if should_add_dupe(&krate.id) {
@@ -1023,17 +1045,17 @@ pub fn check(
 
         // Check the workspace to detect dependencies that are used more than once
         // but don't use a shared [workspace.[dev-/build-]dependencies] declaration
-        if let Some(ws_deps) = &workspace_dependencies {
-            if ws_deps.duplicates != LintLevel::Allow {
-                scope.spawn(|_| {
-                    check_workspace_duplicates(
-                        ctx.krates,
-                        ctx.krate_spans,
-                        ws_deps,
-                        &mut ws_duplicate_packs,
-                    );
-                });
-            }
+        if let Some(ws_deps) = &workspace_dependencies
+            && ws_deps.duplicates != LintLevel::Allow
+        {
+            scope.spawn(|_| {
+                check_workspace_duplicates(
+                    ctx.krates,
+                    ctx.krate_spans,
+                    ws_deps,
+                    &mut ws_duplicate_packs,
+                );
+            });
         }
     });
 
@@ -1063,19 +1085,17 @@ pub fn check(
         sink.push(pack);
     }
 
-    if let Some(ws_deps) = workspace_dependencies {
-        if ws_deps.unused != LintLevel::Allow {
-            if let Some(id) = krate_spans
-                .workspace_id
-                .filter(|_id| !krate_spans.unused_workspace_deps.is_empty())
-            {
-                sink.push(diags::UnusedWorkspaceDependencies {
-                    id,
-                    unused: &krate_spans.unused_workspace_deps,
-                    level: ws_deps.unused,
-                });
-            }
-        }
+    if let Some(ws_deps) = workspace_dependencies
+        && ws_deps.unused != LintLevel::Allow
+        && let Some(id) = krate_spans
+            .workspace_id
+            .filter(|_id| !krate_spans.unused_workspace_deps.is_empty())
+    {
+        sink.push(diags::UnusedWorkspaceDependencies {
+            id,
+            unused: &krate_spans.unused_workspace_deps,
+            level: ws_deps.unused,
+        });
     }
 
     let mut pack = Pack::new(Check::Bans);
@@ -1123,7 +1143,7 @@ pub fn check_build(
         let has_build_script = krate
             .targets
             .iter()
-            .any(|t| t.kind.iter().any(|k| *k == TargetKind::CustomBuild));
+            .any(|t| t.kind.contains(&TargetKind::CustomBuild));
 
         !has_build_script
             || allow_build_scripts
@@ -1186,63 +1206,61 @@ pub fn check_build(
 
     // If the build script hashes to the same value and required features are not actually
     // set on the crate, we can skip it
-    if let Some(kc) = krate_config {
-        if let Some(bsc) = &kc.build_script {
-            if let Some(path) = krate
-                .targets
-                .iter()
-                .find_map(|t| (t.name == "build-script-build").then_some(&t.src_path))
-            {
-                let root = &krate.manifest_path.parent().unwrap();
-                match validate_file_checksum(path, &bsc.value) {
-                    Ok(_) => {
-                        pack.push(diags::ChecksumMatch {
-                            path: diags::HomePath { path, root, home },
-                            checksum: bsc,
-                            severity: None,
-                            file_id,
-                        });
+    if let Some(kc) = krate_config
+        && let Some(bsc) = &kc.build_script
+        && let Some(path) = krate
+            .targets
+            .iter()
+            .find_map(|t| (t.name == "build-script-build").then_some(&t.src_path))
+    {
+        let root = &krate.manifest_path.parent().unwrap();
+        match validate_file_checksum(path, &bsc.value) {
+            Ok(_) => {
+                pack.push(diags::ChecksumMatch {
+                    path: diags::HomePath { path, root, home },
+                    checksum: bsc,
+                    severity: None,
+                    file_id,
+                });
 
-                        // Emit an error if the user specifies features that don't exist
-                        for rfeat in &kc.required_features {
-                            if !krate.features.contains_key(&rfeat.value) {
-                                pack.push(diags::UnknownFeature {
-                                    krate,
-                                    feature: rfeat,
-                                    file_id,
-                                });
-                            }
-                        }
-
-                        let enabled = krates.get_enabled_features(&krate.id).unwrap();
-
-                        let enabled_features: Vec<_> = kc
-                            .required_features
-                            .iter()
-                            .filter(|f| enabled.contains(&f.value))
-                            .collect();
-
-                        // If none of the required-features are present then we
-                        // can skip the rest of the check
-                        if enabled_features.is_empty() {
-                            return kc_index;
-                        }
-
-                        pack.push(diags::FeaturesEnabled {
-                            enabled_features,
-                            file_id,
-                        });
-                    }
-                    Err(err) => {
-                        pack.push(diags::ChecksumMismatch {
-                            path: diags::HomePath { path, root, home },
-                            checksum: bsc,
-                            severity: Some(Severity::Warning),
-                            error: format!("build script failed checksum: {err:#}"),
+                // Emit an error if the user specifies features that don't exist
+                for rfeat in &kc.required_features {
+                    if !krate.features.contains_key(&rfeat.value) {
+                        pack.push(diags::UnknownFeature {
+                            krate,
+                            feature: rfeat,
                             file_id,
                         });
                     }
                 }
+
+                let enabled = krates.get_enabled_features(&krate.id).unwrap();
+
+                let enabled_features: Vec<_> = kc
+                    .required_features
+                    .iter()
+                    .filter(|f| enabled.contains(&f.value))
+                    .collect();
+
+                // If none of the required-features are present then we
+                // can skip the rest of the check
+                if enabled_features.is_empty() {
+                    return kc_index;
+                }
+
+                pack.push(diags::FeaturesEnabled {
+                    enabled_features,
+                    file_id,
+                });
+            }
+            Err(err) => {
+                pack.push(diags::ChecksumMismatch {
+                    path: diags::HomePath { path, root, home },
+                    checksum: bsc,
+                    severity: Some(Severity::Warning),
+                    error: format!("build script failed checksum: {err:#}"),
+                    file_id,
+                });
             }
         }
     }
@@ -1294,10 +1312,7 @@ pub fn check_build(
                 let absolute_path = match crate::PathBuf::from_path_buf(entry.into_path()) {
                     Ok(p) => p,
                     Err(path) => {
-                        pack.push(
-                            crate::diag::Diagnostic::warning()
-                                .with_message(format!("path {path:?} is not utf-8, skipping")),
-                        );
+                        pack.push(diags::NonUtf8Path { path: &path });
                         continue;
                     }
                 };
@@ -1305,9 +1320,7 @@ pub fn check_build(
                 let path = &absolute_path;
 
                 let Ok(rel_path) = path.strip_prefix(root) else {
-                    pack.push(crate::diag::Diagnostic::error().with_message(format!(
-                        "path '{path}' is not relative to crate root '{root}'"
-                    )));
+                    pack.push(diags::NonRootPath { path, root });
                     continue;
                 };
 
@@ -1325,30 +1338,30 @@ pub fn check_build(
                             &kc.allow[i]
                         });
 
-                    if let Some(ae) = ae {
-                        if ae.checksum.is_none() {
-                            pack.push(diags::ExplicitPathAllowance {
-                                allowed: ae,
-                                file_id,
-                            });
-                            continue;
-                        }
+                    if let Some(ae) = ae
+                        && ae.checksum.is_none()
+                    {
+                        pack.push(diags::ExplicitPathAllowance {
+                            allowed: ae,
+                            file_id,
+                        });
+                        continue;
                     }
 
                     // Check if the path matches an allowed glob pattern
-                    if let Some(ag) = &kc.allow_globs {
-                        if let Some(globs) = ag.matches(&candidate, &mut matches) {
-                            for &i in &matches {
-                                glob_hit.set(i, true);
-                            }
-
-                            pack.push(diags::GlobAllowance {
-                                path: diags::HomePath { path, root, home },
-                                globs,
-                                file_id,
-                            });
-                            continue;
+                    if let Some(ag) = &kc.allow_globs
+                        && let Some(globs) = ag.matches(&candidate, &mut matches)
+                    {
+                        for &i in &matches {
+                            glob_hit.set(i, true);
                         }
+
+                        pack.push(diags::GlobAllowance {
+                            path: diags::HomePath { path, root, home },
+                            globs,
+                            file_id,
+                        });
+                        continue;
                     }
 
                     // If the file had a checksum specified, verify it still matches,
@@ -1407,10 +1420,8 @@ pub fn check_build(
                     .into_iter()
                     .zip(vgs.patterns.iter())
                     .filter_map(|(hit, gp)| {
-                        if !hit {
-                            if let cfg::GlobPattern::User(gp) = gp {
-                                return Some(gp);
-                            }
+                        if !hit && let cfg::GlobPattern::User(gp) = gp {
+                            return Some(gp);
                         }
 
                         None
@@ -1506,7 +1517,7 @@ fn check_is_executable(
 
             // If we have a shebang, look to see if we have the newline, otherwise we need to read more bytes
             let mut hdr = [0u8; 256];
-            let header = if !header.iter().any(|b| *b == b'\n') {
+            let header = if !header.contains(&b'\n') {
                 hdr[..16].copy_from_slice(&header);
                 let read = file.read(&mut hdr[16..])?;
                 &hdr[..read + 16]
@@ -1653,14 +1664,16 @@ fn check_workspace_duplicates(
             .workspace_span(kid)
             .zip(krate_spans.workspace_id)
         {
-            labels.push(Label::secondary(ws_id, ws_span.key).with_message(format!(
-                "{}workspace dependency",
-                if ws_span.patched.is_some() {
-                    "patched "
-                } else {
-                    ""
-                }
-            )));
+            labels.push(
+                Label::secondary(ws_id, ws_span.key).with_message(format_args!(
+                    "{}workspace dependency",
+                    if ws_span.patched.is_some() {
+                        "patched "
+                    } else {
+                        ""
+                    }
+                )),
+            );
 
             if let Some(patched) = ws_span.patched {
                 labels.push(

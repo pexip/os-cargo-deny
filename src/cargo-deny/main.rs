@@ -31,6 +31,7 @@ enum Command {
 pub enum Format {
     Human,
     Json,
+    Sarif,
 }
 
 #[derive(ValueEnum, Copy, Clone, Debug)]
@@ -227,6 +228,17 @@ fn setup_logger(
                 .chain(std::io::stderr())
                 .apply()?;
         }
+        Format::Sarif => {
+            // For SARIF output, suppress regular logs to stderr to avoid mixing with SARIF JSON
+            // Only output actual errors that would prevent SARIF generation
+            fern::Dispatch::new()
+                .level(log::LevelFilter::Error)
+                .format(move |out, message, _record| {
+                    out.finish(format_args!("{message}"));
+                })
+                .chain(std::io::stderr())
+                .apply()?;
+        }
     }
 
     Ok(())
@@ -352,7 +364,7 @@ fn main() {
     match real_main() {
         Ok(_) => {}
         Err(e) => {
-            log::error!("{:#}", e);
+            log::error!("{e:#}");
             std::process::exit(1);
         }
     }
