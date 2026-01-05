@@ -481,11 +481,9 @@ impl crate::cfg::UnvalidatedConfig for Config {
                     let dmv = extended.deny_multiple_versions;
                     let wrappers = extended.wrappers;
 
-                    if let Some((dmv, wrappers)) = dmv.as_ref().zip(wrappers.as_ref())
-                        && dmv.value
-                        && !wrappers.value.is_empty()
-                    {
-                        ctx.push(
+                    if let Some((dmv, wrappers)) = dmv.as_ref().zip(wrappers.as_ref()) {
+                        if dmv.value && !wrappers.value.is_empty() {
+                            ctx.push(
                                 Diagnostic::error()
                                     .with_message(
                                         "a crate ban was specified with both `wrappers` and `deny-multiple-versions` = true",
@@ -497,7 +495,8 @@ impl crate::cfg::UnvalidatedConfig for Config {
                                             .with_message("has `deny-multiple-versions` set to true"),
                                     ]),
                             );
-                        continue;
+                            continue;
+                        }
                     }
 
                     if dmv.is_some_and(|d| d.value) {
