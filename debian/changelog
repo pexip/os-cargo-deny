@@ -1,3 +1,10 @@
+cargo-deny (0.18.9+pexip24u1) pexip; urgency=medium
+
+  * New upstream release
+  * Make Rust 1.85-compatible
+
+ -- Samuel Collins <samuel.collins@pexip.com>  Mon, 05 Jan 2026 15:07:46 +0000
+
 cargo-deny (0.18.2+pexip24u1) pexip; urgency=medium
 
   * New upstream release
