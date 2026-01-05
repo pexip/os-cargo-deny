@@ -168,7 +168,18 @@ impl<'de> Deserialize<'de> for Licensee {
     fn deserialize(value: &mut Value<'de>) -> Result<Self, DeserError> {
         let val = value.take_string(Some("an SPDX licensee string"))?;
 
-        match spdx::Licensee::parse(&val) {
+        match spdx::Licensee::parse_mode(
+            &val,
+            spdx::ParseMode {
+                // Allow deprecated, in case we are matching against GNU licenses
+                allow_deprecated: true,
+                // Imprecise names however are never needed
+                allow_imprecise_license_names: false,
+                allow_postfix_plus_on_gpl: false,
+                allow_slash_as_or_operator: false,
+                allow_unknown: false,
+            },
+        ) {
             Ok(licensee) => Ok(Self(Spanned::with_span(licensee, value.span))),
             Err(pe) => {
                 let offset = value.span.start;
@@ -194,7 +205,7 @@ impl serde::Serialize for Licensee {
     }
 }
 
-/// Top level configuration for the a license check
+/// Top level configuration for the license check
 pub struct Config {
     pub private: Private,
     /// The minimum confidence threshold we allow when determining the license
@@ -202,7 +213,7 @@ pub struct Config {
     pub confidence_threshold: f32,
     /// Licenses that will be allowed in a license expression
     pub allow: Vec<Licensee>,
-    /// Determines the response to licenses in th `allow`ed list which do not
+    /// Determines the response to licenses in the `allow`ed list which do not
     /// exist in the dependency tree.
     pub unused_allowed_license: LintLevel,
     /// Overrides the license expression used for a particular crate as long as
@@ -211,6 +222,9 @@ pub struct Config {
     /// Allow 1 or more additional licenses on a per-crate basis, so particular
     /// licenses aren't accepted for every possible crate and must be opted into
     pub exceptions: Vec<Exception>,
+    /// Determines the response to licenses in the `exceptions` list which do not
+    /// exist in the dependency tree.
+    pub unused_license_exception: LintLevel,
     /// If true, performs license checks for dev-dependencies for workspace
     /// crates as well
     pub include_dev: bool,
@@ -222,6 +236,7 @@ impl Default for Config {
         Self {
             private: Private::default(),
             unused_allowed_license: LintLevel::Warn,
+            unused_license_exception: LintLevel::Warn,
             confidence_threshold: DEFAULT_CONFIDENCE_THRESHOLD,
             allow: Vec::new(),
             clarify: Vec::new(),
@@ -256,6 +271,9 @@ impl<'de> Deserialize<'de> for Config {
             .unwrap_or(LintLevel::Warn);
         let clarify = th.optional("clarify").unwrap_or_default();
         let exceptions = th.optional("exceptions").unwrap_or_default();
+        let unused_license_exception = th
+            .optional("unused-license-exception")
+            .unwrap_or(LintLevel::Warn);
         let include_dev = th.optional("include-dev").unwrap_or_default();
 
         th.finalize(None)?;
@@ -267,6 +285,7 @@ impl<'de> Deserialize<'de> for Config {
             unused_allowed_license,
             clarify,
             exceptions,
+            unused_license_exception,
             include_dev,
             deprecated_spans: fdeps,
         })
@@ -280,7 +299,6 @@ impl crate::cfg::UnvalidatedConfig for Config {
     ///
     /// 1. Ensures all SPDX identifiers are valid
     /// 1. Ensures all SPDX expressions are valid
-    /// 1. Ensures the same license is not both allowed and denied
     fn validate(self, mut ctx: ValidationContext<'_>) -> Self::ValidCfg {
         use rayon::prelude::*;
 
@@ -296,7 +314,7 @@ impl crate::cfg::UnvalidatedConfig for Config {
                         Diagnostic::error()
                             .with_message("failed to parse url")
                             .with_labels(vec![
-                                Label::primary(ctx.cfg_id, aurl.span).with_message(pe.to_string()),
+                                Label::primary(ctx.cfg_id, aurl.span).with_message(pe),
                             ]),
                     );
                 }
@@ -325,8 +343,7 @@ impl crate::cfg::UnvalidatedConfig for Config {
                         Diagnostic::error()
                             .with_message("unable to parse license expression")
                             .with_labels(vec![
-                                Label::primary(ctx.cfg_id, expr_span)
-                                    .with_message(err.reason.to_string()),
+                                Label::primary(ctx.cfg_id, expr_span).with_message(err.reason),
                             ]),
                     );
 
@@ -366,6 +383,7 @@ impl crate::cfg::UnvalidatedConfig for Config {
             file_id: ctx.cfg_id,
             private: self.private,
             unused_allowed_license: self.unused_allowed_license,
+            unused_license_exception: self.unused_license_exception,
             confidence_threshold: self.confidence_threshold,
             clarifications,
             exceptions,
@@ -460,6 +478,7 @@ pub struct ValidConfig {
     pub file_id: FileId,
     pub private: Private,
     pub unused_allowed_license: LintLevel,
+    pub unused_license_exception: LintLevel,
     pub confidence_threshold: f32,
     pub allowed: Vec<Licensee>,
     pub clarifications: Vec<ValidClarification>,

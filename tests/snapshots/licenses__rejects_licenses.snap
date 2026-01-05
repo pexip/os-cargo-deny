@@ -56,19 +56,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
-          "span": "MIT OR Apache-2.0"
+          "line": 25,
+          "message": "",
+          "span": "MIT/Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 25,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
-          "column": 19,
-          "line": 4,
+          "column": 16,
+          "line": 25,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -141,19 +141,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
-          "span": "MIT OR Apache-2.0"
+          "line": 24,
+          "message": "",
+          "span": "MIT/Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 24,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
-          "column": 19,
-          "line": 4,
+          "column": 16,
+          "line": 24,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -224,19 +224,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
-          "span": "MIT OR Apache-2.0"
+          "line": 22,
+          "message": "",
+          "span": "MIT/Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 22,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
-          "column": 19,
-          "line": 4,
+          "column": 16,
+          "line": 22,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -256,7 +256,7 @@ expression: diags
   },
   {
     "fields": {
-      "code": "unlicensed",
+      "code": "empty-license-field",
       "graphs": [
         {
           "Krate": {
@@ -268,15 +268,49 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression was not specified",
+          "line": 5,
+          "message": "empty field",
           "span": ""
-        },
+        }
+      ],
+      "message": "license field was present but empty",
+      "severity": "warning"
+    },
+    "type": "diagnostic"
+  },
+  {
+    "fields": {
+      "code": "unlicensed",
+      "graphs": [
+        {
+          "Krate": {
+            "name": "features-galore",
+            "version": "0.1.0"
+          }
+        }
+      ],
+      "labels": [
         {
           "column": 9,
           "line": 2,
-          "message": "a valid license expression could not be retrieved for the crate",
+          "message": "",
           "span": "features-galore"
+        }
+      ],
+      "message": "a valid license expression could not be retrieved for the crate",
+      "severity": "warning"
+    },
+    "type": "diagnostic"
+  },
+  {
+    "fields": {
+      "code": "unlicensed",
+      "graphs": [
+        {
+          "Krate": {
+            "name": "features-galore",
+            "version": "0.1.0"
+          }
         }
       ],
       "message": "features-galore = 0.1.0 is unlicensed",
@@ -322,19 +356,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 19,
+          "message": "",
           "span": "MIT OR Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 19,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
           "column": 19,
-          "line": 4,
+          "line": 19,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -374,19 +408,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 29,
+          "message": "",
           "span": "MIT OR Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 29,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
           "column": 19,
-          "line": 4,
+          "line": 29,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -442,19 +476,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 20,
+          "message": "",
           "span": "MIT OR Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 20,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
           "column": 19,
-          "line": 4,
+          "line": 20,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -535,19 +569,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
-          "span": "MIT OR Apache-2.0"
+          "line": 23,
+          "message": "",
+          "span": "MIT/Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 23,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
-          "column": 19,
-          "line": 4,
+          "column": 16,
+          "line": 23,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -672,19 +706,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 41,
+          "message": "",
           "span": "MIT OR Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 41,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
           "column": 19,
-          "line": 4,
+          "line": 41,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -732,19 +766,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 30,
+          "message": "",
           "span": "MIT OR Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 30,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
           "column": 19,
-          "line": 4,
+          "line": 30,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -800,19 +834,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 38,
+          "message": "",
           "span": "MIT OR Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 38,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
           "column": 19,
-          "line": 4,
+          "line": 38,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -860,19 +894,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 25,
+          "message": "",
           "span": "MIT OR Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 25,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
           "column": 19,
-          "line": 4,
+          "line": 25,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -912,19 +946,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 26,
+          "message": "",
           "span": "MIT OR Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 26,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
           "column": 19,
-          "line": 4,
+          "line": 26,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -995,19 +1029,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 19,
+          "message": "",
           "span": "MIT OR Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 19,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
           "column": 19,
-          "line": 4,
+          "line": 19,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -1080,19 +1114,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 20,
+          "message": "",
           "span": "MIT OR Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 20,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
           "column": 19,
-          "line": 4,
+          "line": 20,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -1140,13 +1174,13 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 19,
+          "message": "",
           "span": "MIT"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 19,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         }
@@ -1191,19 +1225,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 22,
+          "message": "",
           "span": "MIT OR Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 22,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
           "column": 19,
-          "line": 4,
+          "line": 22,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -1275,25 +1309,25 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 28,
+          "message": "",
           "span": "Zlib OR Apache-2.0 OR MIT"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 28,
           "message": "rejected: license is not explicitly allowed",
           "span": "Zlib"
         },
         {
           "column": 20,
-          "line": 4,
+          "line": 28,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         },
         {
           "column": 34,
-          "line": 4,
+          "line": 28,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         }
@@ -1376,25 +1410,25 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 19,
+          "message": "",
           "span": "MIT OR Apache-2.0 OR Zlib"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 19,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
           "column": 19,
-          "line": 4,
+          "line": 19,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         },
         {
           "column": 33,
-          "line": 4,
+          "line": 19,
           "message": "rejected: license is not explicitly allowed",
           "span": "Zlib"
         }
@@ -1461,19 +1495,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 39,
+          "message": "",
           "span": "MIT OR Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 39,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
           "column": 19,
-          "line": 4,
+          "line": 39,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -1537,19 +1571,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
-          "span": "MIT OR Apache-2.0"
+          "line": 43,
+          "message": "",
+          "span": "MIT/Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 43,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
-          "column": 19,
-          "line": 4,
+          "column": 16,
+          "line": 43,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -1597,19 +1631,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 36,
+          "message": "",
           "span": "MIT OR Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 36,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
           "column": 19,
-          "line": 4,
+          "line": 36,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -1674,19 +1708,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
-          "span": "MIT OR Apache-2.0"
+          "line": 22,
+          "message": "",
+          "span": "MIT/Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 22,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
-          "column": 19,
-          "line": 4,
+          "column": 16,
+          "line": 22,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -1734,19 +1768,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 20,
+          "message": "",
           "span": "MIT OR Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 20,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
           "column": 19,
-          "line": 4,
+          "line": 20,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -1786,19 +1820,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 20,
+          "message": "",
           "span": "MIT OR Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 20,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
           "column": 19,
-          "line": 4,
+          "line": 20,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -1846,19 +1880,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 18,
+          "message": "",
           "span": "MIT OR Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 18,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
           "column": 19,
-          "line": 4,
+          "line": 18,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -1914,19 +1948,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 18,
+          "message": "",
           "span": "MIT OR Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 18,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
           "column": 19,
-          "line": 4,
+          "line": 18,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -1974,19 +2008,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 18,
+          "message": "",
           "span": "MIT OR Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 18,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
           "column": 19,
-          "line": 4,
+          "line": 18,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -2042,19 +2076,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 18,
+          "message": "",
           "span": "MIT OR Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 18,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
           "column": 19,
-          "line": 4,
+          "line": 18,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -2102,19 +2136,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 18,
+          "message": "",
           "span": "MIT OR Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 18,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
           "column": 19,
-          "line": 4,
+          "line": 18,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -2170,19 +2204,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 18,
+          "message": "",
           "span": "MIT OR Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 18,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
           "column": 19,
-          "line": 4,
+          "line": 18,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -2230,19 +2264,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 18,
+          "message": "",
           "span": "MIT OR Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 18,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
           "column": 19,
-          "line": 4,
+          "line": 18,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -2298,19 +2332,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 18,
+          "message": "",
           "span": "MIT OR Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 18,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
           "column": 19,
-          "line": 4,
+          "line": 18,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -2358,19 +2392,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 18,
+          "message": "",
           "span": "MIT OR Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 18,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
           "column": 19,
-          "line": 4,
+          "line": 18,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -2418,19 +2452,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 18,
+          "message": "",
           "span": "MIT OR Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 18,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
           "column": 19,
-          "line": 4,
+          "line": 18,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -2486,19 +2520,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 18,
+          "message": "",
           "span": "MIT OR Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 18,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
           "column": 19,
-          "line": 4,
+          "line": 18,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }
@@ -2546,19 +2580,19 @@ expression: diags
       "labels": [
         {
           "column": 12,
-          "line": 4,
-          "message": "license expression retrieved via Cargo.toml `license`",
+          "line": 18,
+          "message": "",
           "span": "MIT OR Apache-2.0"
         },
         {
           "column": 12,
-          "line": 4,
+          "line": 18,
           "message": "rejected: license is not explicitly allowed",
           "span": "MIT"
         },
         {
           "column": 19,
-          "line": 4,
+          "line": 18,
           "message": "rejected: license is not explicitly allowed",
           "span": "Apache-2.0"
         }

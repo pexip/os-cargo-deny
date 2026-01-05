@@ -8,6 +8,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- next-header -->
 ## [Unreleased] - ReleaseDate
+## [0.18.9] - 2025-12-08
+### Fixed
+- [PR#817](https://github.com/EmbarkStudios/cargo-deny/pull/817) resolved [#816](https://github.com/EmbarkStudios/cargo-deny/issues/816) by making most license integration tests just return success if I or CI am not the one running them.
+
+## [0.18.8] - 2025-12-03
+### Fixed
+- [PR#814](https://github.com/EmbarkStudios/cargo-deny/pull/814) now allows deprecated license identifiers if they are detected from text, which was broken in 0.18.7. Additionally, when a GNU license (GPL, AGPL, LGPL, GFDL) license is detected, it is always detected as the `-or-later` variant, arbitrarily chosen as it is impossible to distinguish between the variants for a particular license version. This means if the license detected is actually wrong (eg. `GPL-3.0-or-later` is detected when the code is actually licensed under `GPL-3.0-only`), the license should instead be clarified to the correct one. Resolves [#813](https://github.com/EmbarkStudios/cargo-deny/issues/813).
+
+## [0.18.7] - 2025-12-02
+### Changed
+- [PR#812](https://github.com/EmbarkStudios/cargo-deny/pull/812) updated `spdx` to 0.13, allowing cargo-deny to remove the askalono dependency but still support license detection.
+
+## [0.18.6] - 2025-11-24
+### Fixed
+- [PR#805](https://github.com/EmbarkStudios/cargo-deny/pull/805) updated `rustsec` to 0.31, resolving [#804](https://github.com/EmbarkStudios/cargo-deny/issues/804).
+- [PR#810](https://github.com/EmbarkStudios/cargo-deny/pull/810) resolved [#809](https://github.com/EmbarkStudios/cargo-deny/issues/809) by printing the crate name and version when its manifest does not contain a `license` expression.
+
+### Added
+- [PR#807](https://github.com/EmbarkStudios/cargo-deny/pull/807) added the `unused-license-exception` option to configure the lint level, resolving [#806](https://github.com/EmbarkStudios/cargo-deny/issues/806).
+
+### Changed
+- [PR#808](https://github.com/EmbarkStudios/cargo-deny/pull/808) updated `gix` to 0.75.
+
+## [0.18.5] - 2025-09-22
+### Changed
+- [PR#789](https://github.com/EmbarkStudios/cargo-deny/pull/789) changed it so that release binaries are now built with LTO.
+- [PR#790](https://github.com/EmbarkStudios/cargo-deny/pull/790) and [PR#794](https://github.com/EmbarkStudios/cargo-deny/pull/794) updated various crates.
+
+### Added
+- [PR#790](https://github.com/EmbarkStudios/cargo-deny/pull/790) added [SARIF](https://sarifweb.azurewebsites.net/) as an output format, usable via `--format sarif`. The current output for this format is experimental and may change in future updates.
+
+## [0.18.4] - 2025-08-14
+### Added
+- [PR#779](https://github.com/EmbarkStudios/cargo-deny/pull/779) added the `--metadata-path` argument to use a cargo metadata JSON file instead of calling cargo metadata, resolving [#777](https://github.com/EmbarkStudios/cargo-deny/issues/777).
+- [PR#782](https://github.com/EmbarkStudios/cargo-deny/pull/782) added `sources.unused-allow-source` to allow configuration of the lint level when a source is allowed but not used by any crate in the graph, closing [#781](https://github.com/EmbarkStudios/cargo-deny/issues/781).
+
+### Changed
+- [PR#786](https://github.com/EmbarkStudios/cargo-deny/pull/786) changed the license check output. `/` is no longer corrected to ` OR `, and if the license expression is found in the package's manifest, that span is used in diagnostic messages instead of the synthesized manifest.
+
+### Fixed
+- [PR#786](https://github.com/EmbarkStudios/cargo-deny/pull/786) resolved [#784](https://github.com/EmbarkStudios/cargo-deny/issues/784) by updating `spdx` to a new version that forces all GNU licenses to be exactly equal when comparing license expressions to licensee expressions, which is incredibly pedantic, but means the license comparison is entirely in the hands of the user so that I no longer have to deal with GNU licenses.
+
+## [0.18.3] - 2025-06-11
+### Changed
+- [PR#773](https://github.com/EmbarkStudios/cargo-deny/pull/773) changed cargo-deny's duplicate detection to automatically ignore versions whose only dependent is another version of the same crate.
+
 ## [0.18.2] - 2025-03-10
 ### Added
 - [PR#753](https://github.com/EmbarkStudios/cargo-deny/pull/753) resolved [#752](https://github.com/EmbarkStudios/cargo-deny/issues/752) by adding back the `advisories.unmaintained` config option. See the [docs](https://embarkstudios.github.io/cargo-deny/checks/advisories/cfg.html#the-unmaintained-field-optional) for how it can be used. The default matches the current behavior, which is to error on any `unmaintained` advisory, but adding `unmaintained = "workspace"` to the `[advisories]` table will mean unmaintained advisories will only error if the crate is a direct dependency of your workspace.
@@ -236,7 +282,7 @@ The following fields have all been removed in favor of denying all licenses that
 
 ## [0.14.3] - 2023-09-29
 ### Fixed
-- [PR#566](https://github.com/EmbarkStudios/cargo-deny/pull/566) updated `tame-index` to obtain support OS file locking, resolving [#537](https://github.com/EmbarkStudios/cargo-deny/issues/537). This change means that cargo-deny should not encounter issues such as those described [here](https://github.com/rustsec/rustsec/issues/1011) since we no longer use `gix::lock` locking advisory databases, and makes reading the crates.io index safer by respecting the lock used by cargo itself.
+- [PR#566](https://github.com/EmbarkStudios/cargo-deny/pull/566) updated `tame-index` to obtain OS file locking, resolving [#537](https://github.com/EmbarkStudios/cargo-deny/issues/537). This change means that cargo-deny should not encounter issues such as those described [in this rustsec issue](https://github.com/rustsec/rustsec/issues/1011) since we no longer use `gix::lock` locking advisory databases, and makes reading the crates.io index safer by respecting the lock used by cargo itself.
 
 ## [0.14.2] - 2023-09-04
 ### Added
@@ -710,7 +756,14 @@ Now each license has to be explicitly approved, either by listing them in `licen
 - Initial implementation release
 
 <!-- next-url -->
-[Unreleased]: https://github.com/EmbarkStudios/cargo-deny/compare/0.18.2...HEAD
+[Unreleased]: https://github.com/EmbarkStudios/cargo-deny/compare/0.18.9...HEAD
+[0.18.9]: https://github.com/EmbarkStudios/cargo-deny/compare/0.18.8...0.18.9
+[0.18.8]: https://github.com/EmbarkStudios/cargo-deny/compare/0.18.7...0.18.8
+[0.18.7]: https://github.com/EmbarkStudios/cargo-deny/compare/0.18.6...0.18.7
+[0.18.6]: https://github.com/EmbarkStudios/cargo-deny/compare/0.18.5...0.18.6
+[0.18.5]: https://github.com/EmbarkStudios/cargo-deny/compare/0.18.4...0.18.5
+[0.18.4]: https://github.com/EmbarkStudios/cargo-deny/compare/0.18.3...0.18.4
+[0.18.3]: https://github.com/EmbarkStudios/cargo-deny/compare/0.18.2...0.18.3
 [0.18.2]: https://github.com/EmbarkStudios/cargo-deny/compare/0.18.1...0.18.2
 [0.18.1]: https://github.com/EmbarkStudios/cargo-deny/compare/0.18.0...0.18.1
 [0.18.0]: https://github.com/EmbarkStudios/cargo-deny/compare/0.17.0...0.18.0

@@ -11,6 +11,7 @@ pub mod diag;
 /// Configuration and logic for checking crate licenses
 pub mod licenses;
 pub mod root_cfg;
+pub mod sarif;
 pub mod sources;
 
 #[doc(hidden)]
@@ -352,15 +353,7 @@ impl From<cm::Package> for Krate {
             repository: pkg.repository,
             source,
             targets: pkg.targets,
-            license: pkg.license.map(|lf| {
-                // cargo used to allow / in place of OR which is not valid
-                // in SPDX expression, we force correct it here
-                if lf.contains('/') {
-                    lf.replace('/', " OR ")
-                } else {
-                    lf
-                }
-            }),
+            license: pkg.license,
             license_file: pkg.license_file,
             description: pkg.description,
             manifest_path: pkg.manifest_path,

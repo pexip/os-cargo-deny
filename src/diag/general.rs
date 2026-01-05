@@ -16,10 +16,21 @@ use std::fmt;
     Debug,
     PartialEq,
     Eq,
+    PartialOrd,
+    Ord,
 )]
 #[strum(serialize_all = "kebab-case")]
 pub enum Code {
     Deprecated,
+}
+
+impl Code {
+    #[inline]
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Deprecated => "A deprecated field was detected",
+        }
+    }
 }
 
 impl From<Code> for String {
@@ -82,7 +93,7 @@ impl From<Deprecated> for Diagnostic {
         };
 
         Diagnostic::new(severity)
-            .with_message(dep.reason.to_string())
+            .with_message(dep.reason)
             .with_labels(vec![Label::primary(dep.file_id, dep.key)])
             .with_code(Code::Deprecated)
     }

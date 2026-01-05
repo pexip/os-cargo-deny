@@ -327,11 +327,11 @@ fn fetch_and_checkout(repo: &mut gix::Repository) -> anyhow::Result<()> {
 
     // Now that we've updated HEAD, do the actual checkout
     let workdir = repo
-        .work_dir()
+        .workdir()
         .context("unable to checkout, repository is bare")?;
     let root_tree = repo
         .head()?
-        .try_peel_to_id_in_place()?
+        .try_peel_to_id()?
         .context("unable to peel HEAD")?
         .object()
         .context("HEAD commit not downloaded from remote")?
@@ -370,8 +370,7 @@ fn fetch_and_checkout(repo: &mut gix::Repository) -> anyhow::Result<()> {
 fn fetch_via_gix(url: &Url, db_path: &Path) -> anyhow::Result<()> {
     anyhow::ensure!(
         url.scheme() == "https" || url.scheme() == "ssh",
-        "expected '{}' to be an `https` or `ssh` url",
-        url
+        "expected '{url}' to be an `https` or `ssh` url",
     );
 
     // Ensure the parent directory chain is created, gix might? do it for us
@@ -698,7 +697,16 @@ impl<'db, 'k> Report<'db, 'k> {
             advisories.append(&mut db_advisories);
         }
 
-        advisories.sort_by(|a, b| a.0.cmp(b.0));
+        // We can't just sort by krate id, as then multiple advisories for the same crate could
+        // ordered differently between runs
+        advisories.sort_by(|a, b| {
+            let c = a.0.cmp(b.0);
+            if c != std::cmp::Ordering::Equal {
+                c
+            } else {
+                a.1.id().cmp(b.1.id())
+            }
+        });
 
         Self {
             advisories,
