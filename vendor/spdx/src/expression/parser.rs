@@ -1,8 +1,8 @@
 use crate::{
+    AdditionItem, AdditionRef, LicenseItem, LicenseRef, LicenseReq, ParseMode,
     error::{ParseError, Reason},
     expression::{ExprNode, Expression, ExpressionReq, Operator},
     lexer::{Lexer, Token},
-    LicenseItem, LicenseReq, ParseMode,
 };
 use smallvec::SmallVec;
 
@@ -13,10 +13,10 @@ impl Expression {
     /// The validation can fail for many reasons:
     /// * The expression contains invalid characters
     /// * An unknown/invalid license or exception identifier was found. Only
-    ///     [SPDX short identifiers](https://spdx.org/ids) are allowed
+    ///   [SPDX short identifiers](https://spdx.org/ids) are allowed
     /// * The expression contained unbalanced parentheses
     /// * A license or exception immediately follows another license or exception, without
-    ///     a valid AND, OR, or WITH operator separating them
+    ///   a valid AND, OR, or WITH operator separating them
     /// * An AND, OR, or WITH doesn't have a license or `)` preceding it
     ///
     /// ```
@@ -33,9 +33,9 @@ impl Expression {
     ///
     /// 1. '/' is replaced with ' OR '
     /// 1. Lower-cased operators ('or', 'and', 'with') are upper-cased
-    /// 1. '+' is tranformed to `-or-later` for GNU licenses
+    /// 1. '+' is transformed to `-or-later` for GNU licenses, or `-only` with no '+'
     /// 1. Invalid/imprecise license identifiers (eg. `apache2`) are replaced
-    ///     with their valid identifiers
+    ///    with their valid identifiers
     ///
     /// If the provided expression is not modified then `None` is returned
     ///
@@ -44,29 +44,58 @@ impl Expression {
     /// additional parse errors, eg. unbalanced parentheses
     ///
     /// ```
-    /// assert_eq!(spdx::Expression::canonicalize("apache with LLVM-exception/gpl-3.0+").unwrap().unwrap(), "Apache-2.0 WITH LLVM-exception OR GPL-3.0-or-later");
+    /// let expr = "apache with LLVM-exception/gpl-3.0+ and gplv2";
+    /// assert_eq!(
+    ///     spdx::Expression::canonicalize(expr).unwrap().unwrap(),
+    ///     "Apache-2.0 WITH LLVM-exception OR GPL-3.0-or-later AND GPL-2.0-only"
+    /// );
     /// ```
     pub fn canonicalize(original: &str) -> Result<Option<String>, ParseError> {
         let mut can = String::with_capacity(original.len());
 
         let lexer = Lexer::new_mode(original, ParseMode::LAX);
 
+        let push_id = |s: &mut String, id: crate::LicenseId| {
+            s.push_str(id.name);
+            if id.is_gnu() && !id.name.ends_with("-only") && !id.name.ends_with("-or-later") {
+                s.push_str("-only");
+            }
+        };
+
         // Keep track if the last license id is a GNU license that uses the -or-later
         // convention rather than the + like all other licenses
-        let mut last_is_gnu = false;
+        let mut last = Option::<crate::LicenseId>::None;
         for tok in lexer {
             let tok = tok?;
 
+            if !matches!(tok.token, Token::Plus) {
+                if let Some(id) = last.take() {
+                    push_id(&mut can, id);
+                }
+            }
+
             match tok.token {
                 Token::Spdx(id) => {
-                    last_is_gnu = id.is_gnu();
-                    can.push_str(id.name);
+                    last = Some(id);
                 }
                 Token::And => can.push_str(" AND "),
                 Token::Or => can.push_str(" OR "),
                 Token::With => can.push_str(" WITH "),
                 Token::Plus => {
-                    if last_is_gnu {
+                    let Some(id) = last.take() else {
+                        return Err(ParseError {
+                            original: original.into(),
+                            span: tok.span,
+                            reason: Reason::Unexpected(&["<license>"]),
+                        });
+                    };
+
+                    push_id(&mut can, id);
+                    if id.is_gnu() {
+                        if can.ends_with("-only") {
+                            can.truncate(can.len() - 5);
+                        }
+
                         can.push_str("-or-later");
                     } else {
                         can.push('+');
@@ -85,15 +114,31 @@ impl Expression {
                     can.push_str("LicenseRef-");
                     can.push_str(lic_ref);
                 }
+                Token::AdditionRef { doc_ref, add_ref } => {
+                    if let Some(dr) = doc_ref {
+                        can.push_str("DocumentRef-");
+                        can.push_str(dr);
+                        can.push(':');
+                    }
+
+                    can.push_str("AdditionRef-");
+                    can.push_str(add_ref);
+                }
+                Token::Unknown(_u) => unreachable!(),
             }
+        }
+
+        if let Some(id) = last {
+            push_id(&mut can, id);
         }
 
         Ok((can != original).then_some(can))
     }
 
-    /// Parses an expression with the specified `ParseMode`. With
-    /// `ParseMode::Lax` it permits some non-SPDX syntax, such as imprecise
-    /// license names and "/" used instead of "OR" in exprssions.
+    /// Parses an expression with the specified `ParseMode`.
+    ///
+    /// With `ParseMode::Lax` it permits some non-SPDX syntax, such as imprecise
+    /// license names and "/" used instead of "OR" in expressions.
     ///
     /// ```
     /// spdx::Expression::parse_mode(
@@ -143,10 +188,10 @@ impl Expression {
             let expected: &[&str] = match last_token {
                 None | Some(Token::And | Token::Or | Token::OpenParen) => &["<license>", "("],
                 Some(Token::CloseParen) => &["AND", "OR"],
-                Some(Token::Exception(_)) => &["AND", "OR", ")"],
-                Some(Token::Spdx(_)) => &["AND", "OR", "WITH", ")", "+"],
+                Some(Token::Exception(_) | Token::AdditionRef { .. }) => &["AND", "OR", ")"],
+                Some(Token::Spdx(_) | Token::Unknown(_)) => &["AND", "OR", "WITH", ")", "+"],
                 Some(Token::LicenseRef { .. } | Token::Plus) => &["AND", "OR", "WITH", ")"],
-                Some(Token::With) => &["<exception>"],
+                Some(Token::With) => &["<addition>"],
             };
 
             Err(ParseError {
@@ -162,6 +207,14 @@ impl Expression {
             match &lt.token {
                 Token::Spdx(id) => match last_token {
                     None | Some(Token::And | Token::Or | Token::OpenParen) => {
+                        if !mode.allow_deprecated && id.is_deprecated() {
+                            return Err(ParseError {
+                                original: original.to_owned(),
+                                span: lt.span,
+                                reason: Reason::DeprecatedLicenseId,
+                            });
+                        }
+
                         expr_queue.push(ExprNode::Req(ExpressionReq {
                             req: LicenseReq::from(*id),
                             span: lt.span.start as u32..lt.span.end as u32,
@@ -173,11 +226,11 @@ impl Expression {
                     None | Some(Token::And | Token::Or | Token::OpenParen) => {
                         expr_queue.push(ExprNode::Req(ExpressionReq {
                             req: LicenseReq {
-                                license: LicenseItem::Other {
+                                license: LicenseItem::Other(Box::new(LicenseRef {
                                     doc_ref: doc_ref.map(String::from),
                                     lic_ref: String::from(*lic_ref),
-                                },
-                                exception: None,
+                                })),
+                                addition: None,
                             },
                             span: lt.span.start as u32..lt.span.end as u32,
                         }));
@@ -195,22 +248,44 @@ impl Expression {
                             ..
                         }) => {
                             // Handle GNU licenses differently, as they should *NOT* be used with the `+`
-                            if !mode.allow_postfix_plus_on_gpl && id.is_gnu() {
-                                return Err(ParseError {
+                            if id.is_gnu() {
+                                if !mode.allow_postfix_plus_on_gpl {
+                                    return Err(ParseError {
+                                        original: original.to_owned(),
+                                        span: lt.span,
+                                        reason: Reason::GnuNoPlus,
+                                    });
+                                }
+
+                                if id.name.ends_with("-or-later") {
+                                    return Err(ParseError {
+                                        original: original.to_owned(),
+                                        span: lt.span,
+                                        reason: Reason::GnuPlusWithSuffix,
+                                    });
+                                }
+
+                                *id = crate::gnu_license_id(
+                                    id.name.strip_suffix("-only").unwrap_or(id.name),
+                                    true,
+                                )
+                                .ok_or_else(|| ParseError {
                                     original: original.to_owned(),
                                     span: lt.span,
-                                    reason: Reason::GnuNoPlus,
-                                });
+                                    reason: Reason::UnknownLicense,
+                                })?;
+                            } else {
+                                *or_later = true;
                             }
-
-                            *or_later = true;
                         }
                         _ => unreachable!(),
                     },
                     _ => return make_err_for_token(last_token, lt.span),
                 },
                 Token::With => match last_token {
-                    Some(Token::Spdx(_) | Token::LicenseRef { .. } | Token::Plus) => {}
+                    Some(
+                        Token::Spdx(_) | Token::LicenseRef { .. } | Token::Plus | Token::Unknown(_),
+                    ) => {}
                     _ => return make_err_for_token(last_token, lt.span),
                 },
                 Token::Or | Token::And => match last_token {
@@ -219,7 +294,9 @@ impl Expression {
                         | Token::LicenseRef { .. }
                         | Token::CloseParen
                         | Token::Exception(_)
-                        | Token::Plus,
+                        | Token::AdditionRef { .. }
+                        | Token::Plus
+                        | Token::Unknown(_),
                     ) => {
                         let new_op = match lt.token {
                             Token::Or => Op::Or,
@@ -268,7 +345,9 @@ impl Expression {
                             | Token::LicenseRef { .. }
                             | Token::Plus
                             | Token::Exception(_)
-                            | Token::CloseParen,
+                            | Token::AdditionRef { .. }
+                            | Token::CloseParen
+                            | Token::Unknown(_),
                         ) => {
                             while let Some(top) = op_stack.pop() {
                                 match top.op {
@@ -295,12 +374,53 @@ impl Expression {
                 Token::Exception(exc) => match last_token {
                     Some(Token::With) => match expr_queue.last_mut() {
                         Some(ExprNode::Req(lic)) => {
-                            lic.req.exception = Some(*exc);
+                            lic.req.addition = Some(AdditionItem::Spdx(*exc));
                         }
                         _ => unreachable!(),
                     },
                     _ => return make_err_for_token(last_token, lt.span),
                 },
+                Token::AdditionRef { doc_ref, add_ref } => match last_token {
+                    Some(Token::With) => match expr_queue.last_mut() {
+                        Some(ExprNode::Req(lic)) => {
+                            lic.req.addition = Some(AdditionItem::Other(Box::new(AdditionRef {
+                                doc_ref: doc_ref.map(String::from),
+                                add_ref: String::from(*add_ref),
+                            })));
+                        }
+                        _ => unreachable!(),
+                    },
+                    _ => return make_err_for_token(last_token, lt.span),
+                },
+                Token::Unknown(unknown) => {
+                    match last_token {
+                        None | Some(Token::And | Token::Or | Token::OpenParen) => {
+                            // This is the same position as a valid SPDX license id,
+                            // so assume that is what the user was attempting
+                            expr_queue.push(ExprNode::Req(ExpressionReq {
+                                req: LicenseReq {
+                                    license: LicenseItem::Other(Box::new(LicenseRef {
+                                        doc_ref: None,
+                                        lic_ref: (*unknown).to_owned(),
+                                    })),
+                                    addition: None,
+                                },
+                                span: lt.span.start as u32..lt.span.end as u32,
+                            }));
+                        }
+                        Some(Token::With) => {
+                            let Some(ExprNode::Req(lic)) = expr_queue.last_mut() else {
+                                return make_err_for_token(last_token, lt.span);
+                            };
+
+                            lic.req.addition = Some(AdditionItem::Other(Box::new(AdditionRef {
+                                doc_ref: None,
+                                add_ref: (*unknown).to_owned(),
+                            })));
+                        }
+                        _ => return make_err_for_token(last_token, lt.span),
+                    }
+                }
             }
 
             last_token = Some(lt.token);
@@ -312,8 +432,10 @@ impl Expression {
                 Token::Spdx(_)
                 | Token::LicenseRef { .. }
                 | Token::Exception(_)
+                | Token::AdditionRef { .. }
                 | Token::CloseParen
-                | Token::Plus,
+                | Token::Plus
+                | Token::Unknown(_),
             ) => {}
             // We have to have at least one valid license requirement
             None => {

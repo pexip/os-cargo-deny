@@ -13,7 +13,8 @@
 // CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 use super::{
-    padding::RsaEncoding, KeyPairComponents, PublicExponent, PublicKey, PublicKeyComponents, N,
+    padding::{self, RsaEncoding},
+    KeyPairComponents, PublicExponent, PublicKey, PublicKeyComponents, N,
 };
 
 /// RSA PKCS#1 1.5 signatures.
@@ -546,7 +547,13 @@ impl KeyPair {
 
         // Use the output buffer as the scratch space for the signature to
         // reduce the required stack space.
-        padding_alg.encode(m_hash, signature, self.public().inner().n().len_bits(), rng)?;
+        padding::encode(
+            padding_alg,
+            m_hash,
+            signature,
+            self.public().inner().n().len_bits(),
+            rng,
+        )?;
 
         // RFC 8017 Section 5.1.2: RSADP, using the Chinese Remainder Theorem
         // with Garner's algorithm.
@@ -641,14 +648,14 @@ impl KeyPair {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test;
+    use crate::testutil as test;
     use alloc::vec;
 
     #[test]
     fn test_rsakeypair_private_exponentiate() {
         let cpu = cpu::features();
         test::run(
-            test_file!("keypair_private_exponentiate_tests.txt"),
+            test_vector_file!("keypair_private_exponentiate_tests.txt"),
             |section, test_case| {
                 assert_eq!(section, "");
 

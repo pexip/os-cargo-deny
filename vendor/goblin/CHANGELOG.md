@@ -3,7 +3,71 @@ All notable changes to this project will be documented in this file.
 
 Before 1.0, this project does not adhere to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
-Goblin is now 0.9, which means we will try our best to ease breaking changes. Tracking issue is here: https://github.com/m4b/goblin/issues/97
+Goblin is now 0.10, which means we will try our best to ease breaking changes. Tracking issue is here: https://github.com/m4b/goblin/issues/97
+
+## [0.10.4] - 2025-11-30
+## Added
+elf.reloc: add some missing PowerPC 32-bit relocation type constants, thanks @ivlzme: https://github.com/m4b/goblin/pull/495
+## Fixed
+pe: Fix potential out-of-bounds read in unwind/POGO info parser, thanks @kkent030315: https://github.com/m4b/goblin/pull/498
+pe: Reject cyclic resource trees, thanks @Mrmaxmeier: https://github.com/m4b/goblin/pull/499
+pe: Handle unpadded resource values in .NET assemblies compiled with Mono, thanks @BinFlip: https://github.com/m4b/goblin/pull/501
+
+## [0.10.3] - 2025-10-16
+## Fixed
+pe: fix regression in PE relocs, thanks @PJB3005: https://github.com/m4b/goblin/pull/496
+
+## [0.10.2] - 2025-10-5
+## Added
+pe: make `LoadConfigData::directory` public, thanks @kkent030315: https://github.com/m4b/goblin/pull/488
+
+## Fixed
+pe: remove alignment in rva helper function, huge amount of great details in the linked PR, thanks @makubacki: https://github.com/m4b/goblin/pull/491
+elf, pe: Add/Extend ELF/PE permissive parsing mode to better handle packed, broken, or malware samples, thanks @chf0x: https://github.com/m4b/goblin/pull/479
+pe: fix resource parsing issues, thanks @x0rb3l: https://github.com/m4b/goblin/pull/490
+pe: fix bad lifetime annotation, thanks @Hexorg: https://github.com/m4b/goblin/pull/493
+pe, mach, elf: fix lifetime warnings (no pr): fddcc4747ccf306469ff6092a953bd667ec8ed7d
+
+## [0.10.1] - 2025-8-14
+## Added
+pe: Add .NET CLR parser, thanks @kkent030315: https://github.com/m4b/goblin/pull/432
+pe: Add parser for `C_SCOPE_TABLE`, thanks @kkent030315: https://github.com/m4b/goblin/pull/477
+pe: Add resource parser, thanks @kkent030315: https://github.com/m4b/goblin/pull/431
+pe: Add `parse_tls_data` option, thanks @ideeockus: https://github.com/m4b/goblin/pull/457
+pe: Add load config parser, thanks @kkent030315: https://github.com/m4b/goblin/pull/464
+elf: added `type_to_str` support for coredump constants, thanks @gunbux: https://github.com/m4b/goblin/pull/475
+elf: added PowerPC64 relocations, thanks @Gelbpunkt: https://github.com/m4b/goblin/pull/484
+## Fixed
+pe: fix load config parser out of bounds, thanks @kkent030315 and Robel Campbell: https://github.com/m4b/goblin/pull/483
+pe: remove unwind info alignment assertion, thanks @kkent030315: https://github.com/m4b/goblin/pull/480
+pe: fix base relocation parser panic, thanks @kkent030315: https://github.com/m4b/goblin/pull/465
+pe: Fix some offsets computation when using scroll, thanks @DreydenGys: https://github.com/m4b/goblin/pull/471
+pe: cannot read cb size, thanks chf0x: https://github.com/m4b/goblin/pull/472
+pe: fix tls raw data parser, thanks @jorgeaduran and @kkent030315: https://github.com/m4b/goblin/pull/473
+build: fix no-std build errors, thanks @hannahfluch: https://github.com/m4b/goblin/pull/478
+
+## [0.10.0]  - 2025-5-25
+### Breaking
+build: use rust 2024 edition; bump MSRV to 1.85
+pe: fix address size incompatibility on 32-bit builds, thanks @kkent030315: https://github.com/m4b/goblin/pull/441
+pe: fix fail on malformed certificate table parsing, thanks @ideeockus: https://github.com/m4b/goblin/pull/417
+pe: remove use of generics for is_32bit, thanks @kkent030315: https://github.com/m4b/goblin/pull/435
+pe: Support multiple debug directories and VCFeature, Repro, ExDllCharacteristics, POGO parsers, thanks @kkent030315: https://github.com/m4b/goblin/pull/403
+### Added
+elf: add Loongarch macros and name mapping, thanks @000lbh:  https://github.com/m4b/goblin/pull/446
+pe: Add base relocation parser thanks @kkent030315: https://github.com/m4b/goblin/pull/444
+### Fixed
+pe.header: fix parse without rich header, thanks @ideeockus: https://github.com/m4b/goblin/pull/451
+pe.header: fix parse header with no dos stub, thanks @ideeockus: https://github.com/m4b/goblin/pull/456
+pe.imports: ignore malformed imports in ParseMode::Permissive, thanks @ideeockus: https://github.com/m4b/goblin/pull/442
+pe: Change Section Table Real Name Handling, thanks @prettyroseslover: https://github.com/m4b/goblin/pull/438
+pe.tls: `tlsdata.parse_with_opts` - integer overflow + out of bound, thanks @BinFlip: https://github.com/m4b/goblin/pull/448
+pe.debug: `POGOInfo.parse_with_opts` - integer overflow + out of bound, thanks @BinFlip: https://github.com/m4b/goblin/pull/449
+archive: fix subtract with overflow in archive parser, thanks @kkent030315: https://github.com/m4b/goblin/pull/454
+te: fix subtract with overflow in TE header parser, thanks @kkent030315: https://github.com/m4b/goblin/pull/452
+archive: fix size overflow in name index parser, thanks @kkent030315: https://github.com/m4b/goblin/pull/455
+coff: fix subtract with overflow in COFF header parser, thanks @kkent030315: https://github.com/m4b/goblin/pull/453
+
 
 ## [0.9.3]  - 2025-1-5
 ### Fixed

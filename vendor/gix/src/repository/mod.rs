@@ -19,8 +19,14 @@ pub enum Kind {
 
 #[cfg(any(feature = "attributes", feature = "excludes"))]
 pub mod attributes;
+///
+#[cfg(feature = "blame")]
+mod blame;
 mod cache;
+#[cfg(feature = "worktree-mutation")]
+mod checkout;
 mod config;
+
 ///
 #[cfg(feature = "blob-diff")]
 mod diff;
@@ -57,6 +63,67 @@ mod state;
 mod submodule;
 mod thread_safe;
 mod worktree;
+
+///
+mod new_commit {
+    /// The error returned by [`new_commit(…)`](crate::Repository::new_commit()).
+    #[derive(Debug, thiserror::Error)]
+    #[allow(missing_docs)]
+    pub enum Error {
+        #[error(transparent)]
+        ParseTime(#[from] crate::config::time::Error),
+        #[error("Committer identity is not configured")]
+        CommitterMissing,
+        #[error("Author identity is not configured")]
+        AuthorMissing,
+        #[error(transparent)]
+        NewCommitAs(#[from] crate::repository::new_commit_as::Error),
+    }
+}
+
+///
+mod new_commit_as {
+    /// The error returned by [`new_commit_as(…)`](crate::Repository::new_commit_as()).
+    #[derive(Debug, thiserror::Error)]
+    #[allow(missing_docs)]
+    pub enum Error {
+        #[error(transparent)]
+        WriteObject(#[from] crate::object::write::Error),
+        #[error(transparent)]
+        FindCommit(#[from] crate::object::find::existing::Error),
+    }
+}
+
+///
+#[cfg(feature = "blame")]
+pub mod blame_file {
+    /// Options to be passed to [Repository::blame_file()](crate::Repository::blame_file()).
+    #[derive(Default, Debug, Clone)]
+    pub struct Options {
+        /// The algorithm to use for diffing. If `None`, `diff.algorithm` will be used.
+        pub diff_algorithm: Option<gix_diff::blob::Algorithm>,
+        /// The ranges to blame in the file.
+        pub ranges: gix_blame::BlameRanges,
+        /// Don't consider commits before the given date.
+        pub since: Option<gix_date::Time>,
+        /// Determine if rename tracking should be performed, and how.
+        pub rewrites: Option<gix_diff::Rewrites>,
+    }
+
+    /// The error returned by [Repository::blame_file()](crate::Repository::blame_file()).
+    #[derive(Debug, thiserror::Error)]
+    #[allow(missing_docs)]
+    pub enum Error {
+        #[error(transparent)]
+        CommitGraphIfEnabled(#[from] super::commit_graph_if_enabled::Error),
+        #[error(transparent)]
+        DiffAlgorithm(#[from] crate::config::diff::algorithm::Error),
+        #[error(transparent)]
+        DiffResourceCache(#[from] super::diff_resource_cache::Error),
+        #[error(transparent)]
+        Blame(#[from] gix_blame::Error),
+    }
+}
 
 ///
 #[cfg(feature = "blob-diff")]
@@ -213,6 +280,20 @@ pub mod merge_base_octopus {
         OpenCache(#[from] crate::repository::commit_graph_if_enabled::Error),
         #[error(transparent)]
         MergeBaseOctopus(#[from] super::merge_base_octopus_with_graph::Error),
+    }
+}
+
+///
+#[cfg(feature = "revision")]
+pub mod merge_bases_many {
+    /// The error returned by [Repository::merge_bases_many()](crate::Repository::merge_bases_many()).
+    #[derive(Debug, thiserror::Error)]
+    #[allow(missing_docs)]
+    pub enum Error {
+        #[error(transparent)]
+        OpenCache(#[from] crate::repository::commit_graph_if_enabled::Error),
+        #[error(transparent)]
+        MergeBase(#[from] gix_revision::merge_base::Error),
     }
 }
 

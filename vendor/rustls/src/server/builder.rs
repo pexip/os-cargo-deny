@@ -3,13 +3,13 @@ use core::marker::PhantomData;
 
 use pki_types::{CertificateDer, PrivateKeyDer};
 
-use super::{handy, ResolvesServerCert, ServerConfig};
+use super::{ResolvesServerCert, ServerConfig, handy};
 use crate::builder::{ConfigBuilder, WantsVerifier};
 use crate::error::Error;
 use crate::sign::{CertifiedKey, SingleCertAndKey};
 use crate::sync::Arc;
 use crate::verify::{ClientCertVerifier, NoClientAuth};
-use crate::{compress, versions, NoKeyLog};
+use crate::{NoKeyLog, compress, versions};
 
 impl ConfigBuilder<ServerConfig, WantsVerifier> {
     /// Choose how to verify client certificates.
@@ -92,7 +92,9 @@ impl ConfigBuilder<ServerConfig, WantsServerCert> {
     ) -> Result<ServerConfig, Error> {
         let mut certified_key =
             CertifiedKey::from_der(cert_chain, key_der, self.crypto_provider())?;
-        certified_key.ocsp = Some(ocsp);
+        if !ocsp.is_empty() {
+            certified_key.ocsp = Some(ocsp);
+        }
         Ok(self.with_cert_resolver(Arc::new(SingleCertAndKey::from(certified_key))))
     }
 

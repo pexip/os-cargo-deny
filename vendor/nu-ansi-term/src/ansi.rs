@@ -1,7 +1,7 @@
 #![allow(missing_docs)]
 use crate::style::{Color, Style};
 use crate::write::AnyWrite;
-use std::fmt;
+use core::fmt;
 
 impl Style {
     /// Write any bytes that go *before* a piece of text to the given writer.
@@ -400,6 +400,7 @@ impl fmt::Display for Suffix {
 }
 
 #[cfg(test)]
+#[allow(unused)]
 macro_rules! test {
     ($name: ident: $style: expr; $input: expr => $result: expr) => {
         #[test]
@@ -414,8 +415,9 @@ macro_rules! test {
 }
 
 #[cfg(test)]
-#[cfg(not(feature = "gnu_legacy"))]
+#[cfg(all(not(feature = "gnu_legacy"), feature = "std"))]
 mod test {
+
     use crate::style::Color::*;
     use crate::style::Style;
     use crate::Color;

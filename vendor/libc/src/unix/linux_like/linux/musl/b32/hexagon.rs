@@ -34,6 +34,14 @@ s! {
     }
 
     pub struct ipc_perm {
+        #[cfg(musl_v1_2_3)]
+        pub __key: crate::key_t,
+        #[cfg(not(musl_v1_2_3))]
+        #[deprecated(
+            since = "0.2.173",
+            note = "This field is incorrectly named and will be changed
+                to __key in a future release"
+        )]
         pub __ipc_perm_key: crate::key_t,
         pub uid: crate::uid_t,
         pub gid: crate::gid_t,
@@ -67,7 +75,7 @@ s! {
         __unused2: c_int,
         pub msg_ctime: crate::time_t,
         __unused3: c_int,
-        __msg_cbytes: c_ulong,
+        pub __msg_cbytes: c_ulong,
         pub msg_qnum: crate::msgqnum_t,
         pub msg_qbytes: crate::msglen_t,
         pub msg_lspid: crate::pid_t,
@@ -286,7 +294,7 @@ pub const SYS_clock_settime: c_int = 112;
 pub const SYS_clone: c_int = 220;
 pub const SYS_close: c_int = 57;
 pub const SYS_connect: c_int = 203;
-pub const SYS_copy_file_range: c_int = -1; // FIXME(musl)
+pub const SYS_copy_file_range: c_int = -1; // FIXME(hexagon)
 pub const SYS_creat: c_int = 1064;
 pub const SYS_delete_module: c_int = 106;
 pub const SYS_dup2: c_int = 1041;

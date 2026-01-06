@@ -145,10 +145,17 @@ pub struct Reference<'r> {
 
 /// A thread-local handle to interact with a repository from a single thread.
 ///
-/// It is `Send` but **not** `Sync` - for the latter you can convert it `to_sync()`.
+/// It is `Send`, but **not** `Sync` - for the latter you can convert it using
+/// [`Repository::into_sync()`].
+///
 /// Note that it clones itself so that it is empty, requiring the user to configure each clone separately, specifically
 /// and explicitly. This is to have the fastest-possible default configuration available by default, but allow
 /// those who experiment with workloads to get speed boosts of 2x or more.
+///
+/// ### `Send` only with `parallel` feature
+///
+/// When built with `default-features = false`, this type is **not** `Send`.
+/// The minimal feature set to activate `Send` is `features = ["parallel"]`.
 pub struct Repository {
     /// A ref store with shared ownership (or the equivalent of it).
     pub refs: crate::RefStore,
@@ -182,6 +189,11 @@ pub struct Repository {
 /// it's merely meant to be able to exist in a `Sync` context.
 ///
 /// Note that it can also cheaply be cloned, and it will retain references to all contained resources.
+///
+/// ### `Send` only with `parallel` feature
+///
+/// When built with `default-features = false`, this type is **not** `Send`.
+/// The minimal feature set to activate `Send` is `features = ["parallel"]`.
 #[derive(Clone)]
 pub struct ThreadSafeRepository {
     /// A store for references to point at objects

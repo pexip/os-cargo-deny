@@ -11,9 +11,8 @@ use winnow::{
 
 use crate::{
     bstr::ByteSlice,
-    commit::{decode, SignedData},
-    parse,
-    parse::NL,
+    commit::{decode, SignedData, SIGNATURE_FIELD_NAME},
+    parse::{self, NL},
     CommitRefIter,
 };
 
@@ -65,7 +64,7 @@ impl<'a> CommitRefIter<'a> {
         for token in raw_tokens {
             let token = token?;
             if let Token::ExtraHeader((name, value)) = &token.token {
-                if *name == "gpgsig" {
+                if *name == SIGNATURE_FIELD_NAME {
                     // keep track of the signature range alongside the signature data,
                     // because all but the signature is the signed data.
                     signature_and_range = Some((value.clone(), token.token_range));
@@ -214,7 +213,7 @@ impl<'a> CommitRefIter<'a> {
                 }
             }
             Encoding => {
-                let encoding = opt(|i: &mut _| parse::header_field(i, b"encoding", take_till(1.., NL)))
+                let encoding = opt(|i: &mut _| parse::header_field(i, b"encoding", take_till(0.., NL)))
                     .context(StrContext::Expected("encoding <encoding>".into()))
                     .parse_next(input)?;
                 *state = State::ExtraHeaders;
@@ -227,7 +226,7 @@ impl<'a> CommitRefIter<'a> {
                 let extra_header = opt(alt((
                     |i: &mut _| parse::any_header_field_multi_line(i).map(|(k, o)| (k.as_bstr(), Cow::Owned(o))),
                     |i: &mut _| {
-                        parse::any_header_field(i, take_till(1.., NL))
+                        parse::any_header_field(i, take_till(0.., NL))
                             .map(|(k, o)| (k.as_bstr(), Cow::Borrowed(o.as_bstr())))
                     },
                 )))

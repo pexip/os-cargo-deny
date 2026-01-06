@@ -1,10 +1,13 @@
-use crate::bstr::BString;
-use crate::config::cache::util::ApplyLeniencyDefault;
-use crate::status::index_worktree::BuiltinSubmoduleStatus;
-use crate::status::{index_worktree, tree_index, Platform};
-use crate::worktree::IndexPersistedOrInMemory;
-use gix_status::index_as_worktree::{Change, EntryStatus};
 use std::sync::atomic::Ordering;
+
+use gix_status::index_as_worktree::{Change, EntryStatus};
+
+use crate::{
+    bstr::BString,
+    config::cache::util::ApplyLeniencyDefault,
+    status::{index_worktree, index_worktree::BuiltinSubmoduleStatus, tree_index, Platform},
+    worktree::IndexPersistedOrInMemory,
+};
 
 pub(super) mod types;
 use types::{ApplyChange, Item, Iter, Outcome};
@@ -45,17 +48,7 @@ where
 
         let obtain_tree_id = || -> Result<Option<gix_hash::ObjectId>, crate::status::into_iter::Error> {
             Ok(match self.head_tree {
-                Some(None) => match self.repo.head_tree_id() {
-                    Ok(id) => Some(id.into()),
-                    Err(crate::reference::head_tree_id::Error::HeadCommit(
-                        crate::reference::head_commit::Error::PeelToCommit(
-                            crate::head::peel::to_commit::Error::PeelToObject(
-                                crate::head::peel::to_object::Error::Unborn { .. },
-                            ),
-                        ),
-                    )) => Some(gix_hash::ObjectId::empty_tree(self.repo.object_hash())),
-                    Err(err) => return Err(err.into()),
-                },
+                Some(None) => Some(self.repo.head_tree_id_or_empty()?.into()),
                 Some(Some(tree_id)) => Some(tree_id),
                 None => None,
             })
@@ -327,7 +320,7 @@ impl Iter {
                 self.index_changes.push((entry_index, ApplyChange::SetSizeToZero));
             }
             _ => {}
-        };
+        }
         Some(item)
     }
 }

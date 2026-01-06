@@ -442,17 +442,6 @@ mod abbrev {
 mod validate {
     use crate::{bstr::BStr, config::tree::keys};
 
-    pub struct LockTimeout;
-    impl keys::Validate for LockTimeout {
-        fn validate(&self, value: &BStr) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
-            let value = gix_config::Integer::try_from(value)?
-                .to_decimal()
-                .ok_or_else(|| format!("integer {value} cannot be represented as integer"));
-            super::Core::FILES_REF_LOCK_TIMEOUT.try_into_lock_timeout(Ok(value?))?;
-            Ok(())
-        }
-    }
-
     pub struct Disambiguate;
     impl keys::Validate for Disambiguate {
         #[cfg_attr(not(feature = "revision"), allow(unused_variables))]
@@ -489,41 +478,41 @@ mod validate {
         }
     }
 
+    #[cfg(feature = "attributes")]
     pub struct SafeCrlf;
+    #[cfg(feature = "attributes")]
     impl keys::Validate for SafeCrlf {
-        #[cfg_attr(not(feature = "attributes"), allow(unused_variables))]
         fn validate(&self, value: &BStr) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
-            #[cfg(feature = "attributes")]
             super::Core::SAFE_CRLF.try_into_safecrlf(value.into())?;
             Ok(())
         }
     }
 
+    #[cfg(feature = "attributes")]
     pub struct AutoCrlf;
+    #[cfg(feature = "attributes")]
     impl keys::Validate for AutoCrlf {
-        #[cfg_attr(not(feature = "attributes"), allow(unused_variables))]
         fn validate(&self, value: &BStr) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
-            #[cfg(feature = "attributes")]
             super::Core::AUTO_CRLF.try_into_autocrlf(value.into())?;
             Ok(())
         }
     }
 
+    #[cfg(feature = "attributes")]
     pub struct Eol;
+    #[cfg(feature = "attributes")]
     impl keys::Validate for Eol {
-        #[cfg_attr(not(feature = "attributes"), allow(unused_variables))]
         fn validate(&self, value: &BStr) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
-            #[cfg(feature = "attributes")]
             super::Core::EOL.try_into_eol(value.into())?;
             Ok(())
         }
     }
 
+    #[cfg(feature = "attributes")]
     pub struct CheckRoundTripEncoding;
+    #[cfg(feature = "attributes")]
     impl keys::Validate for CheckRoundTripEncoding {
-        #[cfg_attr(not(feature = "attributes"), allow(unused_variables))]
         fn validate(&self, value: &BStr) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
-            #[cfg(feature = "attributes")]
             super::Core::CHECK_ROUND_TRIP_ENCODING.try_into_encodings(Some(value.into()))?;
             Ok(())
         }

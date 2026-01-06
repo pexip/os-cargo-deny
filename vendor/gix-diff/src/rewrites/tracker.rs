@@ -10,11 +10,10 @@ use std::ops::Range;
 use bstr::{BStr, ByteSlice};
 use gix_object::tree::{EntryKind, EntryMode};
 
-use crate::rewrites::tracker::visit::SourceKind;
-use crate::tree::visit::{Action, ChangeId, Relation};
 use crate::{
     blob::{platform::prepare_diff::Operation, DiffLineStats, ResourceKind},
-    rewrites::{CopySource, Outcome, Tracker},
+    rewrites::{tracker::visit::SourceKind, CopySource, Outcome, Tracker},
+    tree::visit::{Action, ChangeId, Relation},
     Rewrites,
 };
 
@@ -166,9 +165,9 @@ impl<T: Change> Tracker<T> {
     /// We may refuse the push if that information isn't needed for what we have to track.
     pub fn try_push_change(&mut self, change: T, location: &BStr) -> Option<T> {
         let change_kind = change.kind();
-        if let (None, ChangeKind::Modification { .. }) = (self.rewrites.copies, change_kind) {
+        if let (None, ChangeKind::Modification) = (self.rewrites.copies, change_kind) {
             return Some(change);
-        };
+        }
 
         let entry_kind = change.entry_mode().kind();
         if entry_kind == EntryKind::Commit {
@@ -179,7 +178,7 @@ impl<T: Change> Tracker<T> {
             .filter(|_| matches!(change_kind, ChangeKind::Addition | ChangeKind::Deletion));
         if let (None, EntryKind::Tree) = (relation, entry_kind) {
             return Some(change);
-        };
+        }
 
         let start = self.path_backing.len();
         self.path_backing.extend_from_slice(location);
@@ -240,69 +239,96 @@ impl<T: Change> Tracker<T> {
                 .then_with(|| a.path.start.cmp(&b.path.start).then(a.path.end.cmp(&b.path.end)))
         }
 
+        // Early abort: if there is no pair, don't do anything.
+        let has_work = {
+            let (mut num_deletions, mut num_additions, mut num_modifications) = (0, 0, 0);
+            let mut has_work = false;
+            for change in &self.items {
+                match change.change.kind() {
+                    ChangeKind::Deletion => {
+                        num_deletions += 1;
+                    }
+                    ChangeKind::Modification => {
+                        // This means we have copy-tracking enabled
+                        num_modifications += 1;
+                    }
+                    ChangeKind::Addition => num_additions += 1,
+                }
+                if (num_deletions != 0 && num_additions != 0)
+                    || (self.rewrites.copies.is_some() && num_modifications + num_additions > 1)
+                {
+                    has_work = true;
+                    break;
+                }
+            }
+            has_work
+        };
+
         let mut out = Outcome {
             options: self.rewrites,
             ..Default::default()
         };
-        self.items.sort_by(by_id_and_location);
+        if has_work {
+            self.items.sort_by(by_id_and_location);
 
-        // Rewrites by directory (without local changes) can be pruned out quickly,
-        // by finding only parents, their counterpart, and then all children can be matched by
-        // relationship ID.
-        self.match_pairs_of_kind(
-            visit::SourceKind::Rename,
-            &mut cb,
-            None, /* by identity for parents */
-            &mut out,
-            diff_cache,
-            objects,
-            Some(is_parent),
-        )?;
-
-        self.match_pairs_of_kind(
-            visit::SourceKind::Rename,
-            &mut cb,
-            self.rewrites.percentage,
-            &mut out,
-            diff_cache,
-            objects,
-            None,
-        )?;
-
-        self.match_renamed_directories(&mut cb)?;
-
-        if let Some(copies) = self.rewrites.copies {
+            // Rewrites by directory (without local changes) can be pruned out quickly,
+            // by finding only parents, their counterpart, and then all children can be matched by
+            // relationship ID.
             self.match_pairs_of_kind(
-                visit::SourceKind::Copy,
+                visit::SourceKind::Rename,
                 &mut cb,
-                copies.percentage,
+                None, /* by identity for parents */
+                &mut out,
+                diff_cache,
+                objects,
+                Some(is_parent),
+            )?;
+
+            self.match_pairs_of_kind(
+                visit::SourceKind::Rename,
+                &mut cb,
+                self.rewrites.percentage,
                 &mut out,
                 diff_cache,
                 objects,
                 None,
             )?;
 
-            match copies.source {
-                CopySource::FromSetOfModifiedFiles => {}
-                CopySource::FromSetOfModifiedFilesAndAllSources => {
-                    push_source_tree(&mut |change, location| {
-                        if self.try_push_change(change, location).is_none() {
-                            // make sure these aren't viable to be emitted anymore.
-                            self.items.last_mut().expect("just pushed").emitted = true;
-                        }
-                    })
-                    .map_err(|err| emit::Error::GetItemsForExhaustiveCopyDetection(Box::new(err)))?;
-                    self.items.sort_by(by_id_and_location);
+            self.match_renamed_directories(&mut cb)?;
 
-                    self.match_pairs_of_kind(
-                        visit::SourceKind::Copy,
-                        &mut cb,
-                        copies.percentage,
-                        &mut out,
-                        diff_cache,
-                        objects,
-                        None,
-                    )?;
+            if let Some(copies) = self.rewrites.copies {
+                self.match_pairs_of_kind(
+                    visit::SourceKind::Copy,
+                    &mut cb,
+                    copies.percentage,
+                    &mut out,
+                    diff_cache,
+                    objects,
+                    None,
+                )?;
+
+                match copies.source {
+                    CopySource::FromSetOfModifiedFiles => {}
+                    CopySource::FromSetOfModifiedFilesAndAllSources => {
+                        push_source_tree(&mut |change, location| {
+                            if self.try_push_change(change, location).is_none() {
+                                // make sure these aren't viable to be emitted anymore.
+                                self.items.last_mut().expect("just pushed").emitted = true;
+                            }
+                        })
+                        .map_err(|err| emit::Error::GetItemsForExhaustiveCopyDetection(Box::new(err)))?;
+                        self.items.sort_by(by_id_and_location);
+
+                        self.match_pairs_of_kind(
+                            visit::SourceKind::Copy,
+                            &mut cb,
+                            copies.percentage,
+                            &mut out,
+                            diff_cache,
+                            objects,
+                            None,
+                        )?;
+                    }
                 }
             }
         }
@@ -514,7 +540,7 @@ impl<T: Change> Tracker<T> {
                     dst_items.push((item.change.id().to_owned(), item));
                 }
                 _ => continue,
-            };
+            }
         }
 
         for ((src_id, src_item), (dst_id, dst_item)) in src_items.into_iter().zip(dst_items) {
@@ -641,7 +667,7 @@ fn estimate_involved_items(
 }
 
 fn needs_exact_match(percentage: Option<f32>) -> bool {
-    percentage.map_or(true, |p| p >= 1.0)
+    percentage.is_none_or(|p| p >= 1.0)
 }
 
 /// <`src_idx`, src, possibly diff stat>
@@ -758,7 +784,7 @@ fn find_match<'a, T: Change>(
                 Operation::SourceOrDestinationIsBinary => {
                     // TODO: figure out if git does more here
                 }
-            };
+            }
         }
     }
     Ok(None)

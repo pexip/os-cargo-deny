@@ -1,3 +1,12 @@
+use std::{ops::DerefMut, path::PathBuf, sync::atomic::AtomicBool};
+
+use gix_odb::store::RefreshMode;
+use gix_protocol::fetch::{negotiate, Arguments};
+#[cfg(feature = "async-network-client")]
+use gix_transport::client::async_io::Transport;
+#[cfg(feature = "blocking-network-client")]
+use gix_transport::client::blocking_io::Transport;
+
 use crate::{
     config::{
         cache::util::ApplyLeniency,
@@ -10,12 +19,6 @@ use crate::{
         fetch::{negotiate::Algorithm, outcome, refs, Error, Outcome, Prepare, RefLogMessage, Status},
     },
 };
-use gix_odb::store::RefreshMode;
-use gix_protocol::fetch::negotiate;
-use gix_protocol::{fetch::Arguments, transport::client::Transport};
-use std::ops::DerefMut;
-use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
 
 impl<T> Prepare<'_, '_, T>
 where

@@ -1,12 +1,17 @@
 #![allow(clippy::result_large_err)]
-use crate::{bstr::BString, config::tree::gitoxide, remote};
+use crate::{bstr::BString, remote};
+
+#[cfg(feature = "async-network-client")]
+use gix_transport::client::async_io::Transport;
+#[cfg(feature = "blocking-network-client")]
+use gix_transport::client::blocking_io::Transport;
 
 type ConfigureRemoteFn =
     Box<dyn FnMut(crate::Remote<'_>) -> Result<crate::Remote<'_>, Box<dyn std::error::Error + Send + Sync>>>;
 #[cfg(any(feature = "async-network-client", feature = "blocking-network-client"))]
 type ConfigureConnectionFn = Box<
     dyn FnMut(
-        &mut remote::Connection<'_, '_, Box<dyn gix_protocol::transport::client::Transport + Send>>,
+        &mut remote::Connection<'_, '_, Box<dyn Transport + Send>>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>,
 >;
 
@@ -45,6 +50,8 @@ pub struct PrepareFetch {
 pub enum Error {
     #[error(transparent)]
     Init(#[from] crate::init::Error),
+    #[error(transparent)]
+    CommitterOrFallback(#[from] crate::config::time::Error),
     #[error(transparent)]
     UrlParse(#[from] gix_url::parse::Error),
     #[error("Failed to turn a the relative file url \"{}\" into an absolute one", url.to_bstring())]
@@ -102,18 +109,7 @@ impl PrepareFetch {
                 url: url.clone(),
                 source: err,
             })?;
-        if repo.committer().is_none() {
-            let mut config = gix_config::File::new(gix_config::file::Metadata::api());
-            config
-                .set_raw_value(&gitoxide::Committer::NAME_FALLBACK, "no name configured during clone")
-                .expect("works - statically known");
-            config
-                .set_raw_value(&gitoxide::Committer::EMAIL_FALLBACK, "noEmailAvailable@example.com")
-                .expect("works - statically known");
-            let mut repo_config = repo.config_snapshot_mut();
-            repo_config.append(config);
-            repo_config.commit().expect("configuration is still valid");
-        }
+        repo.committer_or_set_generic_fallback()?;
         Ok(PrepareFetch {
             url,
             #[cfg(any(feature = "async-network-client", feature = "blocking-network-client"))]
@@ -146,6 +142,7 @@ pub struct PrepareCheckout {
 // once async and clone are a thing.
 #[cfg(any(feature = "async-network-client", feature = "blocking-network-client"))]
 mod access_feat {
+    use super::Transport;
     use crate::clone::PrepareFetch;
 
     /// Builder
@@ -157,7 +154,7 @@ mod access_feat {
         pub fn configure_connection(
             mut self,
             f: impl FnMut(
-                    &mut crate::remote::Connection<'_, '_, Box<dyn gix_protocol::transport::client::Transport + Send>>,
+                    &mut crate::remote::Connection<'_, '_, Box<dyn Transport + Send>>,
                 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
                 + 'static,
         ) -> Self {

@@ -11,9 +11,9 @@
 
 [package]
 edition = "2021"
-rust-version = "1.70"
+rust-version = "1.82"
 name = "gix-pathspec"
-version = "0.9.0"
+version = "0.13.0"
 authors = ["Sebastian Thiel <sebastian.thiel@icloud.com>"]
 build = false
 include = [
@@ -40,27 +40,24 @@ doctest = false
 version = "2"
 
 [dependencies.bstr]
-version = "1.3.0"
+version = "1.12.0"
 features = ["std"]
 default-features = false
 
 [dependencies.gix-attributes]
-version = "^0.24.0"
+version = "^0.28.0"
 
 [dependencies.gix-config-value]
-version = "^0.14.11"
+version = "^0.15.2"
 
 [dependencies.gix-glob]
-version = "^0.18.0"
+version = "^0.22.0"
 
 [dependencies.gix-path]
-version = "^0.10.14"
+version = "^0.10.21"
 
 [dependencies.thiserror]
-version = "2.0.0"
-
-[dev-dependencies.once_cell]
-version = "1.12.0"
+version = "2.0.17"
 
 [dev-dependencies.serial_test]
 version = "3.1.1"
@@ -94,6 +91,7 @@ inline_always = "allow"
 items_after_statements = "allow"
 iter_not_returning_iterator = "allow"
 iter_without_into_iter = "allow"
+large_enum_variant = "allow"
 large_stack_arrays = "allow"
 manual_assert = "allow"
 manual_is_variant_and = "allow"
@@ -110,6 +108,7 @@ module_name_repetitions = "allow"
 must_use_candidate = "allow"
 mut_mut = "allow"
 naive_bytecount = "allow"
+needless_continue = "allow"
 needless_for_each = "allow"
 needless_pass_by_value = "allow"
 needless_raw_string_hashes = "allow"
@@ -117,6 +116,7 @@ no_effect_underscore_binding = "allow"
 option_option = "allow"
 range_plus_one = "allow"
 redundant_else = "allow"
+result_large_err = "allow"
 return_self_not_must_use = "allow"
 should_panic_without_expect = "allow"
 similar_names = "allow"

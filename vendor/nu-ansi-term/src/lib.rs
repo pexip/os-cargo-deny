@@ -181,7 +181,8 @@
 //! it does provide a method [`write_to`] to write the result to any value that
 //! implements [`Write`]:
 //!
-//! ```
+#![cfg_attr(feature = "std", doc = "```")]
+#![cfg_attr(not(feature = "std"), doc = "```ignore")]
 //! use nu_ansi_term::Color::Green;
 //!
 //! Green.paint("user data".as_bytes()).write_to(&mut std::io::stdout()).unwrap();
@@ -190,7 +191,8 @@
 //! Similarly, the type [`AnsiByteStrings`] supports writing a list of
 //! [`AnsiByteString`] values with minimal escape sequences:
 //!
-//! ```
+#![cfg_attr(feature = "std", doc = "```")]
+#![cfg_attr(not(feature = "std"), doc = "```ignore")]
 //! use nu_ansi_term::Color::Green;
 //! use nu_ansi_term::AnsiByteStrings;
 //!
@@ -229,6 +231,7 @@
 //! [`fg`]: struct.Style.html#method.fg
 //! [`on`]: struct.Style.html#method.on
 
+#![cfg_attr(not(any(test, feature = "std")), no_std)]
 #![crate_name = "nu_ansi_term"]
 #![crate_type = "rlib"]
 #![warn(missing_copy_implementations)]
@@ -238,6 +241,8 @@
 
 #[cfg(test)]
 doc_comment::doctest!("../README.md");
+
+extern crate alloc;
 
 pub mod ansi;
 pub use ansi::{Infix, Prefix, Suffix};
@@ -251,8 +256,9 @@ pub use display::*;
 
 mod write;
 
+#[cfg(all(windows, feature = "std"))]
 mod windows;
-#[allow(unused_imports)]
+#[cfg(all(windows, feature = "std"))]
 pub use crate::windows::*;
 
 mod util;

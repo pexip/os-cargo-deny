@@ -1,5 +1,6 @@
-use crate::fetch::response::{Acknowledgement, ShallowUpdate, WantedRef};
 use std::path::PathBuf;
+
+use crate::fetch::response::{Acknowledgement, ShallowUpdate, WantedRef};
 
 /// Options for use in [`fetch()`](`crate::fetch()`)
 #[derive(Debug, Clone)]
@@ -17,29 +18,28 @@ pub struct Options<'a> {
     pub reject_shallow_remote: bool,
 }
 
-/// For use in [`RefMap::new()`] and [`fetch`](crate::fetch()).
+/// For use in [`RefMap::fetch()`] and [`fetch`](crate::fetch()).
 #[cfg(feature = "handshake")]
 pub struct Context<'a, T> {
     /// The outcome of the handshake performed with the remote.
     ///
     /// Note that it's mutable as depending on the protocol, it may contain refs that have been sent unconditionally.
-    pub handshake: &'a mut crate::handshake::Outcome,
+    pub handshake: &'a mut crate::Handshake,
     /// The transport to use when making an `ls-refs` or `fetch` call.
     ///
     /// This is always done if the underlying protocol is V2, which is implied by the absence of refs in the `handshake` outcome.
     pub transport: &'a mut T,
-    /// How to self-identify during the `ls-refs` call in [`RefMap::new()`] or the `fetch` call in [`fetch()`](crate::fetch()).
+    /// How to self-identify during the `ls-refs` call in [`RefMap::fetch()`] or the `fetch` call in [`fetch()`](crate::fetch()).
     ///
     /// This could be read from the `gitoxide.userAgent` configuration variable.
     pub user_agent: (&'static str, Option<std::borrow::Cow<'static, str>>),
-    /// If `true`, output all packetlines using the the `gix-trace` machinery.
+    /// If `true`, output all packetlines using the `gix-trace` machinery.
     pub trace_packetlines: bool,
 }
 
 #[cfg(feature = "fetch")]
 mod with_fetch {
-    use crate::fetch;
-    use crate::fetch::{negotiate, refmap};
+    use crate::fetch::{self, negotiate, refmap};
 
     /// For use in [`fetch`](crate::fetch()).
     pub struct NegotiateContext<'a, 'b, 'c, Objects, Alternates, AlternatesOut, AlternatesErr, Find>
@@ -123,7 +123,7 @@ mod with_fetch {
         /// [`refmap::SpecIndex::ExplicitInRemote`] in [`refmap::Mapping`].
         pub refspecs: Vec<gix_refspec::RefSpec>,
         /// Refspecs which have been added implicitly due to settings of the `remote`, usually pre-initialized from
-        /// [`extra_refspecs` in RefMap options](refmap::init::Options).
+        /// [`extra_refspecs` in RefMap options](refmap::init::Context).
         /// They are referred to by [`refmap::SpecIndex::Implicit`] in [`refmap::Mapping`].
         ///
         /// They are never persisted nor are they typically presented to the user.

@@ -8,8 +8,6 @@ pub enum Error {
     NegativeWithDestination,
     #[error("Negative specs must not be empty")]
     NegativeEmpty,
-    #[error("Negative specs are only supported when fetching")]
-    NegativeUnsupported,
     #[error("Negative specs must be object hashes")]
     NegativeObjectHash,
     #[error("Negative specs must be full ref names, starting with \"refs/\"")]
@@ -62,9 +60,6 @@ pub(crate) mod function {
         let mode = match spec.first() {
             Some(&b'^') => {
                 spec = &spec[1..];
-                if operation == Operation::Push {
-                    return Err(Error::NegativeUnsupported);
-                }
                 Mode::Negative
             }
             Some(&b'+') => {
@@ -121,9 +116,11 @@ pub(crate) mod function {
                 *spec = "HEAD".into();
             }
         }
-        let (src, src_had_pattern) = validated(src, operation == Operation::Push && dst.is_some())?;
-        let (dst, dst_had_pattern) = validated(dst, false)?;
-        if mode != Mode::Negative && src_had_pattern != dst_had_pattern {
+        let is_one_sided = dst.is_none();
+        let (src, src_had_pattern) = validated(src, operation == Operation::Push && dst.is_some(), is_one_sided)?;
+        let (dst, dst_had_pattern) = validated(dst, false, false)?;
+        // For one-sided refspecs, we don't need to check for pattern balance
+        if !is_one_sided && mode != Mode::Negative && src_had_pattern != dst_had_pattern {
             return Err(Error::PatternUnbalanced);
         }
 
@@ -154,20 +151,31 @@ pub(crate) mod function {
         spec.len() >= gix_hash::Kind::shortest().len_in_hex() && spec.iter().all(u8::is_ascii_hexdigit)
     }
 
-    fn validated(spec: Option<&BStr>, allow_revspecs: bool) -> Result<(Option<&BStr>, bool), Error> {
+    fn validated(
+        spec: Option<&BStr>,
+        allow_revspecs: bool,
+        is_one_sided: bool,
+    ) -> Result<(Option<&BStr>, bool), Error> {
         match spec {
             Some(spec) => {
                 let glob_count = spec.iter().filter(|b| **b == b'*').take(2).count();
                 if glob_count > 1 {
-                    return Err(Error::PatternUnsupported { pattern: spec.into() });
+                    // For one-sided refspecs, allow any number of globs without validation
+                    if !is_one_sided {
+                        return Err(Error::PatternUnsupported { pattern: spec.into() });
+                    }
                 }
-                let has_globs = glob_count == 1;
+                // Check if there are any globs (one or more asterisks)
+                let has_globs = glob_count > 0;
                 if has_globs {
-                    let mut buf = smallvec::SmallVec::<[u8; 256]>::with_capacity(spec.len());
-                    buf.extend_from_slice(spec);
-                    let glob_pos = buf.find_byte(b'*').expect("glob present");
-                    buf[glob_pos] = b'a';
-                    gix_validate::reference::name_partial(buf.as_bstr())?;
+                    // For one-sided refspecs, skip validation of glob patterns
+                    if !is_one_sided {
+                        let mut buf = smallvec::SmallVec::<[u8; 256]>::with_capacity(spec.len());
+                        buf.extend_from_slice(spec);
+                        let glob_pos = buf.find_byte(b'*').expect("glob present");
+                        buf[glob_pos] = b'a';
+                        gix_validate::reference::name_partial(buf.as_bstr())?;
+                    }
                 } else {
                     gix_validate::reference::name_partial(spec)
                         .map_err(Error::from)

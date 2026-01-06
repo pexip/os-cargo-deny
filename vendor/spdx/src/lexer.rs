@@ -1,14 +1,11 @@
 use crate::{
-    error::{ParseError, Reason},
     ExceptionId, LicenseId,
+    error::{ParseError, Reason},
 };
 
 /// Parsing configuration for SPDX expression
 #[derive(Default, Copy, Clone)]
 pub struct ParseMode {
-    /// The `AND`, `OR`, and `WITH` operators are required to be uppercase in
-    /// the SPDX spec, but enabling this option allows them to be lowercased
-    pub allow_lower_case_operators: bool,
     /// Allows the use of `/` as a synonym for the `OR` operator.
     ///
     /// This also allows for not having whitespace between the `/` and the terms
@@ -29,36 +26,46 @@ pub struct ParseMode {
     /// This option just allows GPL licenses to be treated similarly to all of
     /// the other SPDX licenses.
     pub allow_postfix_plus_on_gpl: bool,
+    /// Whether deprecated license or exception identifiers are allowed
+    pub allow_deprecated: bool,
+    /// Whether unknown license or exception identifiers are allowed
+    pub allow_unknown: bool,
 }
 
 impl ParseMode {
     /// Strict, specification compliant SPDX parsing.
     ///
     /// 1. Only license identifiers in the SPDX license list, or
-    ///     Document/LicenseRef, are allowed. The license identifiers are also
-    ///     case-sensitive.
-    /// 1. `WITH`, `AND`, and `OR` are the only valid operators
+    ///    Document/LicenseRef, are allowed. The license identifiers are also
+    ///    case-sensitive.
+    /// 1. `WITH`, `AND`, and `OR`, case-insensitive, are the only valid operators
+    /// 1. Deprecated licenses are not allowed
+    /// 1. Unknown licenses or exeptions are not allowed
     pub const STRICT: Self = Self {
-        allow_lower_case_operators: false,
         allow_slash_as_or_operator: false,
         allow_imprecise_license_names: false,
         allow_postfix_plus_on_gpl: false,
+        allow_deprecated: false,
+        allow_unknown: false,
     };
 
     /// Allow non-conforming syntax for crates-io compatibility
     ///
     /// 1. Additional, invalid, identifiers are accepted and mapped to a correct
-    ///     SPDX license identifier.
-    ///     See [`IMPRECISE_NAMES`](crate::identifiers::IMPRECISE_NAMES) for the
-    ///     list of additionally accepted identifiers and the license they
-    ///     correspond to.
+    ///    SPDX license identifier.
+    ///    See [`IMPRECISE_NAMES`](crate::identifiers::IMPRECISE_NAMES) for the
+    ///    list of additionally accepted identifiers and the license they
+    ///    correspond to.
     /// 1. `/` can by used as a synonym for `OR`, and doesn't need to be
-    ///     separated by whitespace from the terms it combines
+    ///    separated by whitespace from the terms it combines
+    /// 1. Deprecated license identifiers are allowed
+    /// 1. Unknown licenses or exeptions are not allowed
     pub const LAX: Self = Self {
-        allow_lower_case_operators: true,
         allow_slash_as_or_operator: true,
         allow_imprecise_license_names: true,
         allow_postfix_plus_on_gpl: true,
+        allow_deprecated: true,
+        allow_unknown: false,
     };
 }
 
@@ -69,11 +76,22 @@ pub enum Token<'a> {
     Spdx(LicenseId),
     /// A `LicenseRef-` prefixed id, with an optional `DocumentRef-`
     LicenseRef {
+        /// An optional document reference
         doc_ref: Option<&'a str>,
+        /// The name of the license reference
         lic_ref: &'a str,
     },
     /// A recognized SPDX exception id
     Exception(ExceptionId),
+    /// A `AdditionRef-` prefixed id, with an optional `DocumentRef-`
+    AdditionRef {
+        /// An optional document reference
+        doc_ref: Option<&'a str>,
+        /// The name of the addition reference
+        add_ref: &'a str,
+    },
+    /// An unknown license term was encountered
+    Unknown(&'a str),
     /// A postfix `+` indicating "or later" for a particular SPDX license id
     Plus,
     /// A `(` for starting a group
@@ -110,6 +128,14 @@ impl Token<'_> {
                 }) + "LicenseRef-".len()
                     + lic_ref.len()
             }
+            Token::AdditionRef { doc_ref, add_ref } => {
+                doc_ref.map_or(0, |d| {
+                    // +1 is for the `:`
+                    "DocumentRef-".len() + d.len() + 1
+                }) + "AdditionRef-".len()
+                    + add_ref.len()
+            }
+            Token::Unknown(u) => u.len(),
         }
     }
 }
@@ -174,6 +200,12 @@ impl<'a> Lexer<'a> {
         })
     }
 
+    /// Return a document ref if found - equivalent to the regex `^DocumentRef-([-a-zA-Z0-9.]+)`
+    #[inline]
+    fn find_document_ref(text: &'a str) -> Option<&'a str> {
+        Self::find_ref("DocumentRef-", text)
+    }
+
     /// Return a license ref if found - equivalent to the regex `^LicenseRef-([-a-zA-Z0-9.]+)`
     #[inline]
     fn find_license_ref(text: &'a str) -> Option<&'a str> {
@@ -184,8 +216,23 @@ impl<'a> Lexer<'a> {
     /// equivalent to the regex `^DocumentRef-([-a-zA-Z0-9.]+):LicenseRef-([-a-zA-Z0-9.]+)`
     fn find_document_and_license_ref(text: &'a str) -> Option<(&'a str, &'a str)> {
         let split = text.split_once(':');
-        let doc_ref = split.and_then(|(doc, _)| Self::find_ref("DocumentRef-", doc));
+        let doc_ref = split.and_then(|(doc, _)| Self::find_document_ref(doc));
         let lic_ref = split.and_then(|(_, lic)| Self::find_license_ref(lic));
+        Option::zip(doc_ref, lic_ref)
+    }
+
+    /// Return an addition ref if found - equivalent to the regex `^AdditionRef-([-a-zA-Z0-9.]+)`
+    #[inline]
+    fn find_addition_ref(text: &'a str) -> Option<&'a str> {
+        Self::find_ref("AdditionRef-", text)
+    }
+
+    /// Return a document ref and license ref if found,
+    /// equivalent to the regex `^DocumentRef-([-a-zA-Z0-9.]+):AdditionRef-([-a-zA-Z0-9.]+)`
+    fn find_document_and_addition_ref(text: &'a str) -> Option<(&'a str, &'a str)> {
+        let split = text.split_once(':');
+        let doc_ref = split.and_then(|(doc, _)| Self::find_document_ref(doc));
+        let lic_ref = split.and_then(|(_, add)| Self::find_addition_ref(add));
         Option::zip(doc_ref, lic_ref)
     }
 }
@@ -243,17 +290,11 @@ impl<'a> Iterator for Lexer<'a> {
                     reason: Reason::InvalidCharacters,
                 })),
                 Some(m) => {
-                    if m == "WITH" {
-                        ok_token(Token::With)
-                    } else if m == "AND" {
+                    if m == "AND" || m == "and" {
                         ok_token(Token::And)
-                    } else if m == "OR" {
+                    } else if m == "OR" || m == "or" {
                         ok_token(Token::Or)
-                    } else if self.mode.allow_lower_case_operators && m == "and" {
-                        ok_token(Token::And)
-                    } else if self.mode.allow_lower_case_operators && m == "or" {
-                        ok_token(Token::Or)
-                    } else if self.mode.allow_lower_case_operators && m == "with" {
+                    } else if m == "WITH" || m == "with" {
                         ok_token(Token::With)
                     } else if let Some(lic_id) = crate::license_id(m) {
                         ok_token(Token::Spdx(lic_id))
@@ -270,6 +311,18 @@ impl<'a> Iterator for Lexer<'a> {
                             doc_ref: None,
                             lic_ref,
                         })
+                    } else if let Some((doc_ref, add_ref)) =
+                        Lexer::find_document_and_addition_ref(m)
+                    {
+                        ok_token(Token::AdditionRef {
+                            doc_ref: Some(doc_ref),
+                            add_ref,
+                        })
+                    } else if let Some(add_ref) = Lexer::find_addition_ref(m) {
+                        ok_token(Token::AdditionRef {
+                            doc_ref: None,
+                            add_ref,
+                        })
                     } else if let Some((lic_id, token_len)) =
                         if self.mode.allow_imprecise_license_names {
                             crate::imprecise_license_id(self.inner)
@@ -278,6 +331,8 @@ impl<'a> Iterator for Lexer<'a> {
                         }
                     {
                         Some(Ok((Token::Spdx(lic_id), token_len)))
+                    } else if self.mode.allow_unknown {
+                        ok_token(Token::Unknown(m))
                     } else {
                         Some(Err(ParseError {
                             original: self.original.to_owned(),

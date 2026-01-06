@@ -25,7 +25,13 @@ impl delegate::Navigate for Delegate<'_> {
 
         let mut replacements = Replacements::default();
         let mut errors = Vec::new();
-        let objs = self.objs[self.idx].as_mut()?;
+        let objs = match self.objs[self.idx].as_mut() {
+            Some(objs) => objs,
+            None => {
+                self.err.push(Error::TraversalWithoutStartObject);
+                return None;
+            }
+        };
         let repo = self.repo;
 
         for obj in objs.iter() {
@@ -334,7 +340,7 @@ impl delegate::Navigate for Delegate<'_> {
                         .find_map(|stage| index.entry_index_by_path_and_stage(path, *stage).map(|_| *stage));
                     let exists = self
                         .repo
-                        .work_dir()
+                        .workdir()
                         .is_some_and(|root| root.join(gix_path::from_bstr(path)).exists());
                     self.err.push(Error::IndexLookup {
                         desired_path: path.into(),

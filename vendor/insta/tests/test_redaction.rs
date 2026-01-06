@@ -121,12 +121,12 @@ fn test_with_random_value_and_match_comma() {
         match .. {
             ".id" => "[id]",
         },
-        @r###"
+        @r#"
     id: "[id]"
     username: john_doe
     email: john@example.com
     extra: ""
-    "###, // comma here
+    "#, // comma here
     );
 }
 
@@ -322,14 +322,14 @@ fn test_redact_newtype_struct() {
 
     assert_json_snapshot!(wrapper, {
         r#".id"# => "[id]"
-    }, @r###"
+    }, @r#"
     {
       "id": "[id]",
       "username": "john_doe",
       "email": "john@example.com",
       "extra": ""
     }
-    "###);
+    "#);
 }
 
 #[cfg(feature = "yaml")]
@@ -347,11 +347,11 @@ fn test_redact_newtype_enum() {
     };
     assert_yaml_snapshot!(visitor, {
         r#".id"# => "[id]",
-    }, @r###"
+    }, @r#"
     Visitor:
       id: "[id]"
       name: my-name
-    "###);
+    "#);
 
     let admin = Role::Admin(User {
         id: 42,
@@ -361,13 +361,13 @@ fn test_redact_newtype_enum() {
     });
     assert_yaml_snapshot!(admin, {
         r#".id"# => "[id]",
-    }, @r###"
+    }, @r#"
     Admin:
       id: "[id]"
       username: john_doe
       email: john@example.com
       extra: ""
-    "###);
+    "#);
 }
 
 #[cfg(feature = "json")]
@@ -386,7 +386,7 @@ fn test_redact_recursive() {
 
     assert_json_snapshot!(root, {
         ".**.id" => "[id]",
-    }, @r###"
+    }, @r#"
     {
       "id": "[id]",
       "next": {
@@ -394,7 +394,7 @@ fn test_redact_recursive() {
         "next": null
       }
     }
-    "###);
+    "#);
 }
 
 #[cfg(feature = "yaml")]
@@ -542,4 +542,111 @@ fn test_rounded_redaction() {
             ".y" => insta::rounded_redaction(4),
         }
     );
+}
+
+#[cfg(feature = "yaml")]
+#[test]
+fn test_named_redacted_with_debug_expr() {
+    // This test demonstrates the form with a name, redactions, and debug expression
+    // | File, redacted, named, debug expr | `assert_yaml_snapshot!("name", expr, {"." => sorted_redaction()}, "debug_expr")` |
+
+    #[derive(Serialize, Debug)]
+    pub struct ComplexObject {
+        id: u32,
+        items: Vec<String>,
+        metadata: std::collections::HashMap<String, u32>,
+    }
+
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert("count".to_string(), 42);
+    metadata.insert("version".to_string(), 123);
+
+    let complex_obj = ComplexObject {
+        id: 12345,
+        items: vec!["one".to_string(), "two".to_string(), "three".to_string()],
+        metadata,
+    };
+
+    // Now that we've added support for this form, we can test it directly
+    assert_yaml_snapshot!(
+        "named_redacted_debug_expr",
+        &complex_obj,
+        {
+            ".id" => "[id]",
+            ".metadata" => insta::sorted_redaction()
+        },
+        "This is a custom debug expression for the snapshot"
+    );
+}
+
+#[cfg(feature = "yaml")]
+#[test]
+fn test_named_redacted_supported_form() {
+    #[derive(Serialize, Debug)]
+    pub struct ComplexObject {
+        id: u32,
+        items: Vec<String>,
+        metadata: std::collections::HashMap<String, u32>,
+    }
+
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert("count".to_string(), 42);
+    metadata.insert("version".to_string(), 123);
+
+    let obj = ComplexObject {
+        id: 12345,
+        items: vec!["one".to_string(), "two".to_string(), "three".to_string()],
+        metadata,
+    };
+
+    assert_yaml_snapshot!(
+        "named_redacted_supported",
+        &obj,
+        {
+            ".id" => "[id]",
+            ".metadata" => insta::sorted_redaction()
+        }
+    );
+}
+
+#[cfg(all(feature = "yaml", feature = "redactions"))]
+#[test]
+fn test_metadata_redaction() {
+    #[derive(Serialize)]
+    struct Info {
+        secret: String,
+        public: String,
+    }
+
+    let mut settings = insta::Settings::new();
+    settings.add_redaction(".secret", "[REDACTED]");
+    settings.set_info(&Info {
+        secret: "sensitive_value".into(),
+        public: "visible".into(),
+    });
+
+    settings.bind(|| {
+        assert_yaml_snapshot!("metadata_redaction_test", &vec![1, 2, 3]);
+    });
+}
+
+#[cfg(all(feature = "yaml", feature = "redactions"))]
+#[test]
+fn test_metadata_raw_info_no_redaction() {
+    use insta::internals::Content;
+
+    let mut settings = insta::Settings::new();
+    settings.add_redaction(".secret", "[REDACTED]");
+
+    // Create content that would be redacted if redactions were applied
+    let content = Content::Map(vec![
+        (Content::from("secret"), Content::from("sensitive_value")),
+        (Content::from("public"), Content::from("visible")),
+    ]);
+
+    settings.set_raw_info(&content);
+
+    settings.bind(|| {
+        assert_yaml_snapshot!("metadata_raw_info_no_redaction", &vec![1, 2, 3]);
+    });
 }

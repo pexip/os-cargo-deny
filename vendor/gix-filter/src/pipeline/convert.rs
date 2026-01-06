@@ -50,13 +50,15 @@ pub mod to_worktree {
     #[allow(missing_docs)]
     pub enum Error {
         #[error(transparent)]
+        Ident(#[from] crate::ident::apply::Error),
+        #[error(transparent)]
+        Eol(#[from] crate::eol::convert_to_worktree::Error),
+        #[error(transparent)]
         Worktree(#[from] crate::worktree::encode_to_worktree::Error),
         #[error(transparent)]
         Driver(#[from] crate::driver::apply::Error),
         #[error(transparent)]
         Configuration(#[from] super::configuration::Error),
-        #[error("Could not allocate buffer")]
-        OutOfMemory(#[from] std::collections::TryReserveError),
     }
 }
 
@@ -202,7 +204,7 @@ impl Pipeline {
         let (src, dest) = bufs.src_and_dest();
         if eol::convert_to_worktree(src, digest, dest, self.options.eol_config)? {
             bufs.swap();
-        };
+        }
 
         if let Some(encoding) = encoding {
             let (src, dest) = bufs.src_and_dest();

@@ -180,14 +180,14 @@
 //! }
 //! ```
 
-use core::mem::{size_of, MaybeUninit};
+use core::mem::{MaybeUninit, size_of};
 use core::ptr::copy_nonoverlapping;
 use core::{result, str};
 #[cfg(feature = "std")]
 use std::ffi::{CStr, CString};
 
 use crate::endian::Endian;
-use crate::{error, Pread, Pwrite};
+use crate::{Pread, Pwrite, error};
 
 /// A trait for measuring how large something is; for a byte sequence, it will be its length.
 pub trait MeasureWith<Ctx> {
@@ -750,6 +750,12 @@ macro_rules! sizeof_impl {
                 size_of::<$ty>()
             }
         }
+        impl SizeWith for $ty {
+            #[inline]
+            fn size_with(_ctx: &()) -> usize {
+                size_of::<$ty>()
+            }
+        }
     };
 }
 
@@ -830,24 +836,22 @@ impl<Ctx: Copy, T: TryIntoCtx<Ctx, Error = error::Error>, const N: usize> TryInt
         Ok(offset)
     }
 }
+impl<Ctx, T: SizeWith<Ctx>, const N: usize> SizeWith<Ctx> for [T; N] {
+    fn size_with(ctx: &Ctx) -> usize {
+        T::size_with(ctx) * N
+    }
+}
 
 #[cfg(feature = "std")]
 impl<'a> TryFromCtx<'a> for &'a CStr {
     type Error = error::Error;
     #[inline]
     fn try_from_ctx(src: &'a [u8], _ctx: ()) -> result::Result<(Self, usize), Self::Error> {
-        let null_byte = match src.iter().position(|b| *b == 0) {
-            Some(ix) => ix,
-            None => {
-                return Err(error::Error::BadInput {
-                    size: 0,
-                    msg: "The input doesn't contain a null byte",
-                })
-            }
-        };
-
-        let cstr = unsafe { CStr::from_bytes_with_nul_unchecked(&src[..=null_byte]) };
-        Ok((cstr, null_byte + 1))
+        let cstr = CStr::from_bytes_until_nul(src).map_err(|_| error::Error::BadInput {
+            size: 0,
+            msg: "The input doesn't contain a null byte",
+        })?;
+        Ok((cstr, cstr.to_bytes_with_nul().len()))
     }
 }
 
@@ -866,20 +870,7 @@ impl<'a> TryIntoCtx for &'a CStr {
     type Error = error::Error;
     #[inline]
     fn try_into_ctx(self, dst: &mut [u8], _ctx: ()) -> error::Result<usize> {
-        let data = self.to_bytes_with_nul();
-
-        if dst.len() < data.len() {
-            Err(error::Error::TooBig {
-                size: dst.len(),
-                len: data.len(),
-            })
-        } else {
-            unsafe {
-                copy_nonoverlapping(data.as_ptr(), dst.as_mut_ptr(), data.len());
-            }
-
-            Ok(data.len())
-        }
+        dst.pwrite(self.to_bytes_with_nul(), 0)
     }
 }
 

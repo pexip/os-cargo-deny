@@ -1,6 +1,8 @@
-use crate::bstr::BStr;
-use crate::status::{index_worktree, tree_index};
-use crate::worktree::IndexPersistedOrInMemory;
+use crate::{
+    bstr::BStr,
+    status::{index_worktree, tree_index},
+    worktree::IndexPersistedOrInMemory,
+};
 
 /// An iterator for changes between the index and the worktree and the head-tree and the index.
 ///
@@ -133,7 +135,7 @@ impl Item {
     pub fn location(&self) -> &BStr {
         match self {
             Item::IndexWorktree(change) => change.rela_path(),
-            Item::TreeIndex(change) => change.fields().0,
+            Item::TreeIndex(change) => change.location(),
         }
     }
 }

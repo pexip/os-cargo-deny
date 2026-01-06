@@ -94,27 +94,30 @@ pub struct TlsData<'a> {
 }
 
 impl ImageTlsDirectory {
-    pub fn parse<T: Sized>(
+    pub fn parse(
         bytes: &[u8],
         dd: data_directories::DataDirectory,
         sections: &[section_table::SectionTable],
         file_alignment: u32,
+        is_64: bool,
     ) -> error::Result<Self> {
-        Self::parse_with_opts::<T>(
+        Self::parse_with_opts(
             bytes,
             dd,
             sections,
             file_alignment,
             &options::ParseOptions::default(),
+            is_64,
         )
     }
 
-    pub fn parse_with_opts<T: Sized>(
+    pub fn parse_with_opts(
         bytes: &[u8],
         dd: data_directories::DataDirectory,
         sections: &[section_table::SectionTable],
         file_alignment: u32,
         opts: &options::ParseOptions,
+        is_64: bool,
     ) -> error::Result<Self> {
         let rva = dd.virtual_address as usize;
         let mut offset =
@@ -124,8 +127,6 @@ impl ImageTlsDirectory {
                     rva
                 ))
             })?;
-
-        let is_64 = core::mem::size_of::<T>() == 8;
 
         let start_address_of_raw_data = if is_64 {
             bytes.gread_with::<u64>(&mut offset, scroll::LE)?
@@ -164,51 +165,51 @@ impl ImageTlsDirectory {
 }
 
 impl<'a> TlsData<'a> {
-    pub fn parse<T: Sized>(
+    pub fn parse(
         bytes: &'a [u8],
-        image_base: usize,
+        image_base: u64,
         dd: &data_directories::DataDirectory,
         sections: &[section_table::SectionTable],
         file_alignment: u32,
+        is_64: bool,
     ) -> error::Result<Option<Self>> {
-        Self::parse_with_opts::<T>(
+        Self::parse_with_opts(
             bytes,
             image_base,
             dd,
             sections,
             file_alignment,
             &options::ParseOptions::default(),
+            is_64,
         )
     }
 
-    pub fn parse_with_opts<T: Sized>(
+    pub fn parse_with_opts(
         bytes: &'a [u8],
-        image_base: usize,
+        image_base: u64,
         dd: &data_directories::DataDirectory,
         sections: &[section_table::SectionTable],
         file_alignment: u32,
         opts: &options::ParseOptions,
+        is_64: bool,
     ) -> error::Result<Option<Self>> {
         let mut raw_data = None;
         let mut slot = None;
         let mut callbacks = Vec::new();
 
-        let is_64 = core::mem::size_of::<T>() == 8;
-
         let itd =
-            ImageTlsDirectory::parse_with_opts::<T>(bytes, *dd, sections, file_alignment, opts)?;
+            ImageTlsDirectory::parse_with_opts(bytes, *dd, sections, file_alignment, opts, is_64)?;
 
         // Parse the raw data if any
         if itd.end_address_of_raw_data != 0 && itd.start_address_of_raw_data != 0 {
             if itd.start_address_of_raw_data > itd.end_address_of_raw_data {
                 return Err(error::Error::Malformed(format!(
                     "tls start_address_of_raw_data ({:#x}) is greater than end_address_of_raw_data ({:#x})",
-                    itd.start_address_of_raw_data,
-                    itd.end_address_of_raw_data
+                    itd.start_address_of_raw_data, itd.end_address_of_raw_data
                 )));
             }
 
-            if (itd.start_address_of_raw_data as usize) < image_base {
+            if itd.start_address_of_raw_data < image_base {
                 return Err(error::Error::Malformed(format!(
                     "tls start_address_of_raw_data ({:#x}) is less than image base ({:#x})",
                     itd.start_address_of_raw_data, image_base
@@ -216,21 +217,22 @@ impl<'a> TlsData<'a> {
             }
 
             // VA to RVA
-            let rva = itd.start_address_of_raw_data as usize - image_base;
+            let rva = itd.start_address_of_raw_data - image_base;
             let size = itd.end_address_of_raw_data - itd.start_address_of_raw_data;
-            let offset =
-                utils::find_offset(rva, sections, file_alignment, opts).ok_or_else(|| {
-                    error::Error::Malformed(format!(
-                        "cannot map tls start_address_of_raw_data rva ({:#x}) into offset",
-                        rva
-                    ))
-                })?;
-            raw_data = Some(&bytes[offset..offset + size as usize]);
+            let offset = utils::find_offset(rva as usize, sections, file_alignment, opts);
+
+            raw_data = offset.and_then(|offset| {
+                if offset < bytes.len() {
+                    (&bytes[offset..]).pread_with(0, size as usize).ok()
+                } else {
+                    None
+                }
+            });
         }
 
         // Parse the index if any
         if itd.address_of_index != 0 {
-            if (itd.address_of_index as usize) < image_base {
+            if itd.address_of_index < image_base {
                 return Err(error::Error::Malformed(format!(
                     "tls address_of_index ({:#x}) is less than image base ({:#x})",
                     itd.address_of_index, image_base
@@ -238,14 +240,14 @@ impl<'a> TlsData<'a> {
             }
 
             // VA to RVA
-            let rva = itd.address_of_index as usize - image_base;
-            let offset = utils::find_offset(rva, sections, file_alignment, opts);
+            let rva = itd.address_of_index - image_base;
+            let offset = utils::find_offset(rva as usize, sections, file_alignment, opts);
             slot = offset.and_then(|x| bytes.pread_with::<u32>(x, scroll::LE).ok());
         }
 
         // Parse the callbacks if any
         if itd.address_of_callbacks != 0 {
-            if (itd.address_of_callbacks as usize) < image_base {
+            if itd.address_of_callbacks < image_base {
                 return Err(error::Error::Malformed(format!(
                     "tls address_of_callbacks ({:#x}) is less than image base ({:#x})",
                     itd.address_of_callbacks, image_base
@@ -253,9 +255,9 @@ impl<'a> TlsData<'a> {
             }
 
             // VA to RVA
-            let rva = itd.address_of_callbacks as usize - image_base;
-            let offset =
-                utils::find_offset(rva, sections, file_alignment, opts).ok_or_else(|| {
+            let rva = itd.address_of_callbacks - image_base;
+            let offset = utils::find_offset(rva as usize, sections, file_alignment, opts)
+                .ok_or_else(|| {
                     error::Error::Malformed(format!(
                         "cannot map tls address_of_callbacks rva ({:#x}) into offset",
                         rva
@@ -279,11 +281,11 @@ impl<'a> TlsData<'a> {
                     )));
                 }
                 // Each callback is an VA so convert it to RVA
-                // For x86 compatibility, `usize` is 32-bit, `u64` is 64-bit.
-                // Therefore upcast to u64 first, then downcast the whole var to u32.
-                let callback_rva = (callback - image_base as u64) as usize;
+                let callback_rva = callback - image_base;
                 // Check if the callback is in the image
-                if utils::find_offset(callback_rva, sections, file_alignment, opts).is_none() {
+                if utils::find_offset(callback_rva as usize, sections, file_alignment, opts)
+                    .is_none()
+                {
                     return Err(error::Error::Malformed(format!(
                         "cannot map tls callback ({:#x})",
                         callback

@@ -94,7 +94,7 @@ dependencies = [
 
 [[package]]
 name = "ring"
-version = "0.17.13"
+version = "0.17.14"
 dependencies = [
  "cc",
  "cfg-if",

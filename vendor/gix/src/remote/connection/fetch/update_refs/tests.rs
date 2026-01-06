@@ -56,9 +56,7 @@ mod update {
         remote::{
             fetch,
             fetch::{
-                refmap::Mapping,
-                refmap::Source,
-                refmap::SpecIndex,
+                refmap::{Mapping, Source, SpecIndex},
                 refs::{tests::restricted, update::TypeChange},
                 RefLogMessage,
             },
@@ -126,7 +124,7 @@ mod update {
             (
                 "+refs/remotes/origin/g:refs/heads/main",
                 fetch::refs::update::Mode::RejectedCurrentlyCheckedOut {
-                    worktree_dirs: vec![repo.work_dir().expect("present").to_owned()],
+                    worktree_dirs: vec![repo.workdir().expect("present").to_owned()],
                 },
                 None,
                 "checked out branches cannot be written, as it requires a merge of sorts which isn't done here",
@@ -498,7 +496,7 @@ mod update {
                 "refs/heads/main",
                 fetch::refs::Update {
                     mode: fetch::refs::update::Mode::RejectedCurrentlyCheckedOut {
-                        worktree_dirs: vec![repo.work_dir().expect("present").to_owned()],
+                        worktree_dirs: vec![repo.workdir().expect("present").to_owned()],
                     },
                     type_change: None,
                     edit_index: None,
@@ -778,7 +776,7 @@ mod update {
             }
             _ => unreachable!("only updates"),
         }
-        assert_eq!(edit.name.as_bstr(), "refs/remotes/origin/new-HEAD",);
+        assert_eq!(edit.name.as_bstr(), "refs/remotes/origin/new-HEAD");
     }
 
     #[test]
@@ -947,7 +945,7 @@ mod update {
             },
             TargetRef::Symbolic(name) => {
                 let target = name.as_bstr().into();
-                match r.peel_to_id_in_place() {
+                match r.peel_to_id() {
                     Ok(id) => gix_protocol::handshake::Ref::Symbolic {
                         full_ref_name,
                         target,

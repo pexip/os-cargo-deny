@@ -1,9 +1,10 @@
-#[cfg(feature = "serialization")]
-use serde::{Deserialize, Serialize};
-use std::fmt;
-use std::ops::Range;
+use core::fmt;
+use core::ops::Range;
 
 use crate::{ByteIndex, RawIndex};
+
+#[cfg(feature = "serialization")]
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serialization", derive(Deserialize, Serialize))]
@@ -14,6 +15,7 @@ pub struct Span {
 
 impl Span {
     /// Create a new span from a starting and ending span.
+    #[must_use]
     pub fn new(start: impl Into<ByteIndex>, end: impl Into<ByteIndex>) -> Span {
         let start = start.into();
         let end = end.into();
@@ -24,6 +26,7 @@ impl Span {
     }
 
     /// Gives an empty span at the start of a source.
+    #[must_use]
     pub const fn initial() -> Span {
         Span {
             start: ByteIndex(0),
@@ -40,6 +43,8 @@ impl Span {
     ///
     /// assert_eq!(span, Span::new(0, 5));
     /// ```
+    #[allow(clippy::should_implement_trait)]
+    #[must_use]
     pub fn from_str(s: &str) -> Span {
         Span::new(0, s.len() as u32)
     }
@@ -59,8 +64,9 @@ impl Span {
     ///
     /// assert_eq!(Span::merge(span1, span2), Span::new(0, 16));
     /// ```
+    #[must_use]
     pub fn merge(self, other: Span) -> Span {
-        use std::cmp::{max, min};
+        use core::cmp::{max, min};
 
         let start = min(self.start, other.start);
         let end = max(self.end, other.end);
@@ -75,6 +81,7 @@ impl Span {
     /// let span2 = Span::new(10, 16);
     /// assert!(span1.disjoint(span2));
     /// ```
+    #[must_use]
     pub fn disjoint(self, other: Span) -> bool {
         let (first, last) = if self.end < other.end {
             (self, other)

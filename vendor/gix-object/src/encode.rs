@@ -30,7 +30,7 @@ pub fn loose_header(kind: crate::Kind, size: u64) -> smallvec::SmallVec<[u8; 28]
 
 impl From<Error> for io::Error {
     fn from(other: Error) -> io::Error {
-        io::Error::new(io::ErrorKind::Other, other)
+        io::Error::other(other)
     }
 }
 
@@ -38,7 +38,9 @@ pub(crate) fn header_field_multi_line(name: &[u8], value: &[u8], out: &mut dyn i
     let mut lines = value.as_bstr().lines_with_terminator();
     out.write_all(name)?;
     out.write_all(SPACE)?;
-    out.write_all(lines.next().ok_or(Error::EmptyValue)?)?;
+    if let Some(line) = lines.next() {
+        out.write_all(line)?;
+    }
     for line in lines {
         out.write_all(SPACE)?;
         out.write_all(line)?;

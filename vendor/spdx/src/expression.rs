@@ -1,16 +1,21 @@
+//! Types used in SPDX expressions, notably [`Expression`]
+
 mod minimize;
 mod parser;
 
-use crate::{error::ParseError, LicenseReq};
+use crate::{LicenseReq, error::ParseError};
 pub use minimize::MinimizeError;
 use smallvec::SmallVec;
 use std::fmt;
 
-/// A license requirement inside an SPDX license expression, including
-/// the span in the expression where it is located
+/// A license requirement inside an SPDX license expression
+///
+/// Inclueds the span in the expression where it is located
 #[derive(Debug, Clone)]
 pub struct ExpressionReq {
+    /// The license requirement
     pub req: LicenseReq,
+    /// The span in the original license expression string containing the requirement
     pub span: std::ops::Range<u32>,
 }
 
@@ -23,13 +28,18 @@ impl PartialEq for ExpressionReq {
 /// The joining operators supported by SPDX 2.1
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone)]
 pub enum Operator {
+    /// Conjunctive `AND|and` operator that combines two valid license expressions
     And,
+    /// Disjunctive `OR|or` operator that combines two valid license expressions
     Or,
 }
 
+/// An expression node
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExprNode {
+    /// An operator
     Op(Operator),
+    /// A requirement
     Req(ExpressionReq),
 }
 
@@ -153,11 +163,8 @@ impl Expression {
         result_stack.pop().unwrap()
     }
 
-    /// Just as with evaluate, the license expression is evaluated to see if
-    /// enough license requirements in the expression are met for the evaluation
-    /// to succeed, except this method also keeps track of each failed requirement
-    /// and returns them, allowing for more detailed error reporting about precisely
-    /// what terms in the expression caused the overall failure
+    /// A version of [`Self::evaluate`] that returns the requirements that are not
+    /// met if the evaluation returns `false`.
     pub fn evaluate_with_failures<AF: FnMut(&LicenseReq) -> bool>(
         &self,
         mut allow_func: AF,

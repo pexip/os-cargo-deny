@@ -3,8 +3,11 @@ use std::{cmp::Ordering, ops::Range};
 use bstr::{BStr, ByteSlice, ByteVec};
 use filetime::FileTime;
 
-use crate::entry::{Stage, StageRaw};
-use crate::{entry, extension, AccelerateLookup, Entry, PathStorage, PathStorageRef, State, Version};
+use crate::{
+    entry,
+    entry::{Stage, StageRaw},
+    extension, AccelerateLookup, Entry, PathStorage, PathStorageRef, State, Version,
+};
 
 // TODO: integrate this somehow, somewhere, depending on later usage.
 #[allow(dead_code)]
@@ -194,7 +197,7 @@ impl State {
                 let entry_path = e.path(self);
                 if entry_path == path {
                     return true;
-                };
+                }
                 if !ignore_case {
                     return false;
                 }
@@ -222,7 +225,7 @@ impl State {
                 let dir_path = dir.path(self);
                 if dir_path == directory {
                     return true;
-                };
+                }
                 if !ignore_case {
                     return false;
                 }
@@ -518,7 +521,8 @@ impl State {
 
     /// Physically remove all entries for which `should_remove(idx, path, entry)` returns `true`, traversing them from first to last.
     ///
-    /// Note that the memory used for the removed entries paths is not freed, as it's append-only.
+    /// Note that the memory used for the removed entries paths is not freed, as it's append-only, and
+    /// that some extensions might refer to paths which are now deleted.
     ///
     /// ### Performance
     ///
@@ -534,6 +538,16 @@ impl State {
             res
         });
     }
+
+    /// Physically remove the entry at `index`, or panic if the entry didn't exist.
+    ///
+    /// This call is typically made after looking up `index`, so it's clear that it will not panic.
+    ///
+    /// Note that the memory used for the removed entries paths is not freed, as it's append-only, and
+    /// that some extensions might refer to paths which are now deleted.
+    pub fn remove_entry_at_index(&mut self, index: usize) -> Entry {
+        self.entries.remove(index)
+    }
 }
 
 /// Extensions
@@ -542,6 +556,10 @@ impl State {
     pub fn tree(&self) -> Option<&extension::Tree> {
         self.tree.as_ref()
     }
+    /// Remove the `tree` extension.
+    pub fn remove_tree(&mut self) -> Option<extension::Tree> {
+        self.tree.take()
+    }
     /// Access the `link` extension.
     pub fn link(&self) -> Option<&extension::Link> {
         self.link.as_ref()
@@ -549,6 +567,10 @@ impl State {
     /// Obtain the resolve-undo extension.
     pub fn resolve_undo(&self) -> Option<&extension::resolve_undo::Paths> {
         self.resolve_undo.as_ref()
+    }
+    /// Remove the resolve-undo extension.
+    pub fn remove_resolve_undo(&mut self) -> Option<extension::resolve_undo::Paths> {
+        self.resolve_undo.take()
     }
     /// Obtain the untracked extension.
     pub fn untracked(&self) -> Option<&extension::UntrackedCache> {

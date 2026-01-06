@@ -6,9 +6,9 @@ use std::{
 
 pub use error::Error;
 
-use crate::name::is_pseudo_ref;
 use crate::{
     file,
+    name::is_pseudo_ref,
     store_impl::{file::loose, packed},
     BStr, BString, FullNameRef, PartialName, PartialNameRef, Reference,
 };
@@ -188,7 +188,7 @@ impl file::Store {
                                 res.strip_namespace(namespace);
                             }
                             return Ok(Some(res));
-                        };
+                        }
                     }
                 }
                 Ok(None)
@@ -225,22 +225,26 @@ impl file::Store {
                 use crate::Category::*;
                 let sn = FullNameRef::new_unchecked(sn);
                 match c {
-                    LinkedPseudoRef { name: worktree_name } => is_reflog
-                        .then(|| (linked_git_dir(worktree_name).into(), sn))
-                        .unwrap_or((commondir.into(), name)),
+                    LinkedPseudoRef { name: worktree_name } => {
+                        if is_reflog {
+                            (linked_git_dir(worktree_name).into(), sn)
+                        } else {
+                            (commondir.into(), name)
+                        }
+                    }
                     Tag | LocalBranch | RemoteBranch | Note => (commondir.into(), name),
                     MainRef | MainPseudoRef => (commondir.into(), sn),
-                    LinkedRef { name: worktree_name } => sn
-                        .category()
-                        .is_some_and(|cat| cat.is_worktree_private())
-                        .then(|| {
+                    LinkedRef { name: worktree_name } => {
+                        if sn.category().is_some_and(|cat| cat.is_worktree_private()) {
                             if is_reflog {
                                 (linked_git_dir(worktree_name).into(), sn)
                             } else {
                                 (commondir.into(), name)
                             }
-                        })
-                        .unwrap_or((commondir.into(), sn)),
+                        } else {
+                            (commondir.into(), sn)
+                        }
+                    }
                     PseudoRef | Bisect | Rewritten | WorktreePrivate => (self.git_dir.as_path().into(), name),
                 }
             })
@@ -276,10 +280,10 @@ impl file::Store {
                 .filter_map(|c| gix_path::try_os_str_into_bstr(c.as_os_str().into()).ok())
                 .any(|c| gix_validate::path::component_is_windows_device(c.as_ref()))
         {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Illegal use of reserved Windows device name in \"{}\"", name.as_bstr()),
-            ));
+            return Err(std::io::Error::other(format!(
+                "Illegal use of reserved Windows device name in \"{}\"",
+                name.as_bstr()
+            )));
         }
 
         let ref_path = base.join(relative_path);

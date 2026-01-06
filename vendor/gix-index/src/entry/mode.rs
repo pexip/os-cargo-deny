@@ -49,13 +49,14 @@ impl Mode {
     ) -> Option<Change> {
         match self {
             Mode::FILE if !stat.is_file() => (),
+            Mode::SYMLINK if stat.is_symlink() => return None,
             Mode::SYMLINK if has_symlinks && !stat.is_symlink() => (),
             Mode::SYMLINK if !has_symlinks && !stat.is_file() => (),
             Mode::COMMIT | Mode::DIR if !stat.is_dir() => (),
             Mode::FILE if executable_bit && stat.is_executable() => return Some(Change::ExecutableBit),
             Mode::FILE_EXECUTABLE if executable_bit && !stat.is_executable() => return Some(Change::ExecutableBit),
             _ => return None,
-        };
+        }
         let new_mode = if stat.is_dir() {
             Mode::COMMIT
         } else if executable_bit && stat.is_executable() {
@@ -71,7 +72,8 @@ impl Mode {
 
 impl From<gix_object::tree::EntryMode> for Mode {
     fn from(value: gix_object::tree::EntryMode) -> Self {
-        Self::from_bits_truncate(u32::from(value.0))
+        let value: u16 = value.value();
+        Self::from_bits_truncate(u32::from(value))
     }
 }
 

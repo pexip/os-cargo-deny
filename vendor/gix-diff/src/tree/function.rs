@@ -2,8 +2,10 @@ use std::{borrow::BorrowMut, collections::VecDeque};
 
 use gix_object::{tree::EntryRef, FindExt, TreeRefIter};
 
-use crate::tree::visit::{ChangeId, Relation};
-use crate::tree::{visit::Change, Error, State, TreeInfoTuple, Visit};
+use crate::tree::{
+    visit::{Change, ChangeId, Relation},
+    Error, State, TreeInfoTuple, Visit,
+};
 
 /// Calculate the changes that would need to be applied to `lhs` to get `rhs` using `objects` to obtain objects as needed for traversal.
 /// `state` can be used between multiple calls to re-use memory.
@@ -70,7 +72,7 @@ where
                     }
                     Some((None, None, _)) => unreachable!("BUG: it makes no sense to fill the stack with empties"),
                     None => return Ok(()),
-                };
+                }
                 pop_path = false;
             }
             (Some(lhs), Some(rhs)) => {
@@ -328,7 +330,7 @@ fn handle_lhs_and_rhs_with_equal_filenames(
                 .cancelled()
             {
                 return Err(Error::Cancelled);
-            };
+            }
 
             let relation = relation_to_propagate.or_else(|| {
                 *change_id += 1;
@@ -343,7 +345,7 @@ fn handle_lhs_and_rhs_with_equal_filenames(
                 .cancelled()
             {
                 return Err(Error::Cancelled);
-            };
+            }
             queue.push_back((None, Some(rhs.oid.to_owned()), to_child(relation)));
         }
         (true, _) => {
@@ -371,7 +373,7 @@ fn handle_lhs_and_rhs_with_equal_filenames(
                 .cancelled()
             {
                 return Err(Error::Cancelled);
-            };
+            }
             queue.push_back((Some(lhs.oid.to_owned()), None, to_child(relation)));
         }
         (false, false) => {
@@ -390,7 +392,7 @@ fn handle_lhs_and_rhs_with_equal_filenames(
                 return Err(Error::Cancelled);
             }
         }
-    };
+    }
     Ok(())
 }
 

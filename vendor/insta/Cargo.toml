@@ -11,9 +11,9 @@
 
 [package]
 edition = "2021"
-rust-version = "1.60.0"
+rust-version = "1.64.0"
 name = "insta"
-version = "1.42.1"
+version = "1.44.3"
 authors = ["Armin Ronacher <armin.ronacher@active-4.com>"]
 build = false
 exclude = ["assets/*"]
@@ -41,6 +41,35 @@ rustdoc-args = [
     "--cfg",
     "docsrs",
 ]
+
+[features]
+_cargo_insta_internal = ["clap"]
+colors = ["console"]
+csv = [
+    "dep:csv",
+    "serde",
+]
+default = ["colors"]
+filters = ["regex"]
+glob = [
+    "walkdir",
+    "globset",
+]
+json = ["serde"]
+redactions = [
+    "pest",
+    "pest_derive",
+    "serde",
+]
+ron = [
+    "dep:ron",
+    "serde",
+]
+toml = [
+    "dep:toml",
+    "serde",
+]
+yaml = ["serde"]
 
 [lib]
 name = "insta"
@@ -92,11 +121,8 @@ version = "1.1.6"
 optional = true
 
 [dependencies.globset]
-version = "0.4.6"
+version = ">= 0.4.6, < 0.4.17"
 optional = true
-
-[dependencies.linked-hash-map]
-version = "0.5.6"
 
 [dependencies.once_cell]
 version = "1.20.2"
@@ -109,9 +135,6 @@ optional = true
 version = "2.1.0"
 optional = true
 
-[dependencies.pin-project]
-version = "1"
-
 [dependencies.regex]
 version = "1.6.0"
 features = [
@@ -122,7 +145,7 @@ optional = true
 default-features = false
 
 [dependencies.ron]
-version = "0.7.1"
+version = "0.12.0"
 optional = true
 
 [dependencies.serde]
@@ -150,32 +173,3 @@ features = ["derive"]
 
 [dev-dependencies.similar-asserts]
 version = "1.4.2"
-
-[features]
-_cargo_insta_internal = ["clap"]
-colors = ["console"]
-csv = [
-    "dep:csv",
-    "serde",
-]
-default = ["colors"]
-filters = ["regex"]
-glob = [
-    "walkdir",
-    "globset",
-]
-json = ["serde"]
-redactions = [
-    "pest",
-    "pest_derive",
-    "serde",
-]
-ron = [
-    "dep:ron",
-    "serde",
-]
-toml = [
-    "dep:toml",
-    "serde",
-]
-yaml = ["serde"]

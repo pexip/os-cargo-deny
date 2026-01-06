@@ -1,6 +1,6 @@
 //! Utilities for working with gix that might be useful for downstream users
 
-use crate::{error::GitError, Error};
+use crate::{Error, error::GitError};
 
 /// Writes the `FETCH_HEAD` for the specified fetch outcome to the specified git
 /// repository
@@ -67,8 +67,8 @@ pub fn write_fetch_head(
 
     let fetch_head = {
         let mut hex_id = [0u8; 40];
-        let gix::ObjectId::Sha1(sha1) = oid;
-        let commit_id = crate::utils::encode_hex(sha1, &mut hex_id);
+        let sha1 = unwrap_sha1(*oid);
+        let commit_id = crate::utils::encode_hex(&sha1, &mut hex_id);
 
         let mut fetch_head = String::new();
 
@@ -88,11 +88,11 @@ pub fn write_fetch_head(
             .iter()
             .any(|rspec| {
                 let rspec = rspec.to_ref();
-                if !rspec.remote().map_or(false, |r| r.ends_with(b"HEAD")) {
+                if !rspec.remote().is_some_and(|r| r.ends_with(b"HEAD")) {
                     return false;
                 }
 
-                rspec.local().map_or(false, |l| {
+                rspec.local().is_some_and(|l| {
                     l.to_str().ok().and_then(|l| {
                         l.strip_prefix("refs/remotes/")
                             .and_then(|l| l.strip_suffix("/HEAD"))
@@ -138,4 +138,13 @@ pub fn write_fetch_head(
         .map_err(|io| Error::IoPath(io, fetch_head_path))?;
 
     Ok(*oid)
+}
+
+/// Workaround for `#[non_exhaustive]`
+#[inline]
+pub fn unwrap_sha1(oid: gix::ObjectId) -> [u8; 20] {
+    let gix::ObjectId::Sha1(sha1) = oid else {
+        unreachable!()
+    };
+    sha1
 }

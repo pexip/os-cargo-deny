@@ -1,7 +1,8 @@
 #![allow(clippy::result_large_err)]
+use std::{borrow::Cow, path::PathBuf, time::Duration};
+
 use gix_config::file::Metadata;
 use gix_lock::acquire::Fail;
-use std::{borrow::Cow, path::PathBuf, time::Duration};
 
 use crate::{
     config,
@@ -162,7 +163,6 @@ impl Cache {
             .copied()
     }
 
-    #[cfg(feature = "blob-diff")]
     pub(crate) fn big_file_threshold(&self) -> Result<u64, config::unsigned_integer::Error> {
         Ok(self
             .resolved
@@ -349,7 +349,7 @@ impl Cache {
             if let Ok(mut head) = repo.head() {
                 let ctx = filters.driver_context_mut();
                 ctx.ref_name = head.referent_name().map(|name| name.as_bstr().to_owned());
-                ctx.treeish = head.peel_to_commit_in_place().ok().map(|commit| commit.id);
+                ctx.treeish = head.peel_to_commit().ok().map(|commit| commit.id);
             }
             filters
         };
@@ -385,6 +385,18 @@ impl Cache {
     }
 
     #[cfg(feature = "excludes")]
+    pub(crate) fn ignore_pattern_parser(&self) -> Result<gix_ignore::search::Ignore, config::boolean::Error> {
+        Ok(gix_ignore::search::Ignore {
+            support_precious: boolean(
+                self,
+                "gitoxide.parsePrecious",
+                &config::tree::Gitoxide::PARSE_PRECIOUS,
+                false,
+            )?,
+        })
+    }
+
+    #[cfg(feature = "excludes")]
     pub(crate) fn assemble_exclude_globals(
         &self,
         git_dir: &std::path::Path,
@@ -396,11 +408,13 @@ impl Cache {
             Some(user_path) => Some(user_path),
             None => self.xdg_config_path("ignore")?,
         };
+        let parse_ignore = self.ignore_pattern_parser()?;
         Ok(gix_worktree::stack::state::Ignore::new(
             overrides.unwrap_or_default(),
-            gix_ignore::Search::from_git_dir(git_dir, excludes_file, buf)?,
+            gix_ignore::Search::from_git_dir(git_dir, excludes_file, buf, parse_ignore)?,
             None,
             source,
+            parse_ignore,
         ))
     }
     // TODO: at least one test, maybe related to core.attributesFile configuration.

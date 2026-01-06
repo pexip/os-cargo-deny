@@ -6,13 +6,13 @@ bitflags! {
     /// In-memory flags.
     ///
     /// Notably, not all of these will be persisted but can be used to aid all kinds of operations.
-    #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+    #[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
     pub struct Flags: u32 {
         // TODO: could we use the pathlen ourselves to save 8 bytes? And how to handle longer paths than that? 0 as sentinel maybe?
         /// The mask to obtain the length of the path associated with this entry, up to 4095 characters without extension.
         const PATH_LEN = 0x0fff;
         /// The mask to apply to obtain the stage number of an entry, encoding three value: 0 = base, 1 = ours, 2 = theirs.
-        const STAGE_MASK = 1<<12 | 1<<13;
+        const STAGE_MASK = (1<<12) | (1<<13);
         /// If set, additional bits need to be written to storage.
         const EXTENDED = 1<<14;
         /// If set, the entry be assumed to match with the version on the working tree, as a way to avoid `lstat()`  checks.

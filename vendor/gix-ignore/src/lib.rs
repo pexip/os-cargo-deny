@@ -5,7 +5,7 @@
     all(doc, feature = "document-features"),
     doc = ::document_features::document_features!()
 )]
-#![cfg_attr(all(doc, feature = "document-features"), feature(doc_cfg, doc_auto_cfg))]
+#![cfg_attr(all(doc, feature = "document-features"), feature(doc_cfg))]
 #![deny(missing_docs, rust_2018_idioms)]
 #![forbid(unsafe_code)]
 
@@ -48,6 +48,10 @@ pub enum Kind {
 pub mod parse;
 
 /// Parse git ignore patterns, line by line, from `bytes`.
-pub fn parse(bytes: &[u8]) -> parse::Lines<'_> {
-    parse::Lines::new(bytes)
+///
+/// If `support_precious` is `true`, we will parse `$` prefixed entries as precious.
+/// This is backward-incompatible as files that actually start with `$` like `$houdini`
+/// will then not be ignored anymore, instead it ignores `houdini`.
+pub fn parse(bytes: &[u8], support_precious: bool) -> parse::Lines<'_> {
+    parse::Lines::new(bytes, support_precious)
 }

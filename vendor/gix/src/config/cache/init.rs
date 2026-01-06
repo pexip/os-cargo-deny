@@ -303,7 +303,7 @@ impl crate::Repository {
     }
 
     fn apply_changed_values(&mut self) {
-        self.refs.write_reflog = util::reflog_or_default(self.config.reflog, self.work_dir().is_some());
+        self.refs.write_reflog = util::reflog_or_default(self.config.reflog, self.workdir().is_some());
         self.refs.namespace.clone_from(&self.config.refs_namespace);
     }
 }
@@ -357,10 +357,16 @@ fn apply_environment_overrides(
             "gitoxide",
             None,
             git_prefix,
-            &[{
-                let key = &Gitoxide::TRACE_PACKET;
-                (env(key), key.name)
-            }],
+            &[
+                {
+                    let key = &Gitoxide::TRACE_PACKET;
+                    (env(key), key.name)
+                },
+                {
+                    let key = &Gitoxide::PARSE_PRECIOUS;
+                    (env(key), key.name)
+                },
+            ],
         ),
         (
             "gitoxide",

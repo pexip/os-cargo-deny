@@ -56,24 +56,22 @@ impl<'repo> Delegate<'repo> {
                 let candidates = candidates.take();
                 match candidates {
                     None => *out = None,
-                    Some(candidates) => {
-                        match candidates.len() {
-                            0 => unreachable!(
-                                "BUG: let's avoid still being around if no candidate matched the requirements"
-                            ),
-                            1 => {
-                                *out = candidates.into_iter().next();
-                            }
-                            _ => {
-                                errors.insert(
-                                    0,
-                                    Error::ambiguous(candidates, prefix.expect("set when obtaining candidates"), repo),
-                                );
-                                return Err(Error::from_errors(errors));
-                            }
-                        };
-                    }
-                };
+                    Some(candidates) => match candidates.len() {
+                        0 => {
+                            unreachable!("BUG: let's avoid still being around if no candidate matched the requirements")
+                        }
+                        1 => {
+                            *out = candidates.into_iter().next();
+                        }
+                        _ => {
+                            errors.insert(
+                                0,
+                                Error::ambiguous(candidates, prefix.expect("set when obtaining candidates"), repo),
+                            );
+                            return Err(Error::from_errors(errors));
+                        }
+                    },
+                }
             }
             Ok(out)
         }
@@ -203,7 +201,7 @@ impl Delegate<'_> {
         for (r, obj) in self.refs.iter().zip(self.objs.iter_mut()) {
             if let (Some(ref_), obj_opt @ None) = (r, obj) {
                 if let Some(id) = ref_.target.try_id().map(ToOwned::to_owned).or_else(|| {
-                    match ref_.clone().attach(repo).peel_to_id_in_place() {
+                    match ref_.clone().attach(repo).peel_to_id() {
                         Err(err) => {
                             self.err.push(Error::PeelToId {
                                 name: ref_.name.clone(),
@@ -215,8 +213,8 @@ impl Delegate<'_> {
                     }
                 }) {
                     obj_opt.get_or_insert_with(HashSet::default).insert(id);
-                };
-            };
+                }
+            }
         }
         Some(())
     }

@@ -252,7 +252,7 @@ impl<T> Graph<'_, '_, Commit<T>> {
             gix_hashtable::hash_map::Entry::Occupied(mut entry) => {
                 update_data(&mut entry.get_mut().data);
             }
-        };
+        }
         Ok(self.map.get_mut(&id))
     }
 
@@ -303,7 +303,7 @@ impl<T: Default> Graph<'_, '_, Commit<T>> {
             gix_hashtable::hash_map::Entry::Occupied(mut entry) => {
                 update_commit(entry.get_mut());
             }
-        };
+        }
         Ok(self.map.get_mut(&id))
     }
 }
@@ -327,18 +327,15 @@ impl<'cache, T> Graph<'_, 'cache, T> {
         update_data: impl FnOnce(&mut T),
     ) -> Result<Option<LazyCommit<'_, 'cache>>, get_or_insert_default::Error> {
         let res = try_lookup(&id, &*self.find, self.cache, &mut self.buf)?;
-        Ok(res.map(|commit| {
-            match self.map.entry(id) {
-                gix_hashtable::hash_map::Entry::Vacant(entry) => {
-                    let mut data = default();
-                    update_data(&mut data);
-                    entry.insert(data);
-                }
-                gix_hashtable::hash_map::Entry::Occupied(mut entry) => {
-                    update_data(entry.get_mut());
-                }
-            };
-            commit
+        Ok(res.inspect(|_commit| match self.map.entry(id) {
+            gix_hashtable::hash_map::Entry::Vacant(entry) => {
+                let mut data = default();
+                update_data(&mut data);
+                entry.insert(data);
+            }
+            gix_hashtable::hash_map::Entry::Occupied(mut entry) => {
+                update_data(entry.get_mut());
+            }
         }))
     }
 

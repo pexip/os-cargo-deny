@@ -1,6 +1,7 @@
 use std::{collections::HashSet, io::Write, str::FromStr};
 
 use bstr::{BStr, BString, ByteVec};
+use gix_packetline::blocking_io::{encode, StreamingPeekableIter, Writer};
 
 use crate::driver::{
     process,
@@ -65,15 +66,15 @@ impl Client {
         versions: &[usize],
         desired_capabilities: &[&str],
     ) -> Result<Self, handshake::Error> {
-        let mut out = gix_packetline::Writer::new(process.stdin.take().expect("configured stdin when spawning"));
+        let mut out = Writer::new(process.stdin.take().expect("configured stdin when spawning"));
         out.write_all(format!("{welcome_prefix}-client").as_bytes())?;
         for version in versions {
             out.write_all(format!("version={version}").as_bytes())?;
         }
-        gix_packetline::encode::flush_to_write(out.inner_mut())?;
+        encode::flush_to_write(out.inner_mut())?;
         out.flush()?;
 
-        let mut input = gix_packetline::StreamingPeekableIter::new(
+        let mut input = StreamingPeekableIter::new(
             process.stdout.take().expect("configured stdout when spawning"),
             &[gix_packetline::PacketLineRef::Flush],
             false, /* packet tracing */
@@ -83,7 +84,7 @@ impl Client {
         read.read_line_to_string(&mut buf)?;
         if buf
             .strip_prefix(welcome_prefix)
-            .map_or(true, |rest| rest.trim_end() != "-server")
+            .is_none_or(|rest| rest.trim_end() != "-server")
         {
             return Err(handshake::Error::Protocol {
                 msg: format!("Wanted '{welcome_prefix}-server, got "),
@@ -125,7 +126,7 @@ impl Client {
         for capability in desired_capabilities {
             out.write_all(format!("capability={capability}").as_bytes())?;
         }
-        gix_packetline::encode::flush_to_write(out.inner_mut())?;
+        encode::flush_to_write(out.inner_mut())?;
         out.flush()?;
 
         read.reset_with(&[gix_packetline::PacketLineRef::Flush]);
@@ -167,7 +168,7 @@ impl Client {
     ) -> Result<process::Status, invoke::Error> {
         self.send_command_and_meta(command, meta)?;
         std::io::copy(content, &mut self.input)?;
-        gix_packetline::encode::flush_to_write(self.input.inner_mut())?;
+        encode::flush_to_write(self.input.inner_mut())?;
         self.input.flush()?;
         Ok(self.read_status()?)
     }
@@ -225,7 +226,7 @@ impl Client {
             buf.push_str(&value);
             self.input.write_all(&buf)?;
         }
-        gix_packetline::encode::flush_to_write(self.input.inner_mut())?;
+        encode::flush_to_write(self.input.inner_mut())?;
         Ok(())
     }
 }
@@ -265,13 +266,10 @@ impl std::io::Read for ReadProcessOutputAndStatus<'_> {
             if status.is_success() {
                 Ok(0)
             } else {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!(
-                        "Process indicated error after reading: {}",
-                        status.message().unwrap_or_default()
-                    ),
-                ))
+                Err(std::io::Error::other(format!(
+                    "Process indicated error after reading: {}",
+                    status.message().unwrap_or_default()
+                )))
             }
         } else {
             Ok(num_read)

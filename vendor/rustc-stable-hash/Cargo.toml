@@ -12,8 +12,9 @@
 [package]
 edition = "2021"
 name = "rustc-stable-hash"
-version = "0.1.1"
+version = "0.1.2"
 build = false
+autolib = false
 autobins = false
 autoexamples = false
 autotests = false
@@ -23,9 +24,9 @@ readme = "README.md"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/rust-lang/rustc-stable-hash"
 
+[features]
+nightly = []
+
 [lib]
 name = "rustc_stable_hash"
 path = "src/lib.rs"
-
-[features]
-nightly = []

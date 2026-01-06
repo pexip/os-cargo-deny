@@ -2,13 +2,17 @@ use std::{borrow::Cow, collections::BTreeSet};
 
 use gix_ref::{FullName, FullNameRef};
 
-use crate::bstr::BStr;
-use crate::config::cache::util::ApplyLeniencyDefault;
-use crate::config::tree::{Branch, Push};
-use crate::repository::{
-    branch_remote_ref_name, branch_remote_tracking_ref_name, upstream_branch_and_remote_name_for_tracking_branch,
+use crate::{
+    bstr::BStr,
+    config::{
+        cache::util::ApplyLeniencyDefault,
+        tree::{Branch, Push},
+    },
+    push, remote,
+    repository::{
+        branch_remote_ref_name, branch_remote_tracking_ref_name, upstream_branch_and_remote_name_for_tracking_branch,
+    },
 };
-use crate::{push, remote};
 
 /// Query configuration related to branches.
 impl crate::Repository {
@@ -48,7 +52,16 @@ impl crate::Repository {
                 self.config
                     .resolved
                     .string_by("branch", Some(short_name), Branch::MERGE.name)
-                    .map(|name| crate::config::tree::branch::Merge::try_into_fullrefname(name).map_err(Into::into))
+                    .map(|name| {
+                        if name.starts_with(b"refs/") {
+                            crate::config::tree::branch::Merge::try_into_fullrefname(name)
+                        } else {
+                            gix_ref::Category::LocalBranch
+                                .to_full_name(name.as_ref())
+                                .map(Cow::Owned)
+                        }
+                        .map_err(Into::into)
+                    })
             }
             remote::Direction::Push => {
                 let remote = match self.branch_remote(name.shorten(), direction)? {
@@ -272,11 +285,8 @@ fn matching_remote<'a>(
         })
         .into_iter(),
     );
-    out.mappings.into_iter().next().and_then(|m| {
-        m.rhs.map(|name| {
-            FullName::try_from(name.into_owned())
-                .map(Cow::Owned)
-                .map_err(Into::into)
-        })
-    })
+    out.mappings
+        .into_iter()
+        .next()
+        .and_then(|m| m.rhs.map(|name| FullName::try_from(name.into_owned()).map(Cow::Owned)))
 }

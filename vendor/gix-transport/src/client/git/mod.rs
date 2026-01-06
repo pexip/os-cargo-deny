@@ -11,35 +11,13 @@ pub enum ConnectMode {
     Process,
 }
 
-/// A TCP connection to either a `git` daemon or a spawned `git` process.
-///
-/// When connecting to a daemon, additional context information is sent with the first line of the handshake. Otherwise that
-/// context is passed using command line arguments to a [spawned `git` process][crate::client::file::SpawnProcessOnDemand].
-pub struct Connection<R, W> {
-    pub(in crate::client) writer: W,
-    pub(in crate::client) line_provider: gix_packetline::StreamingPeekableIter<R>,
+/// Connection state shared between blocking and async connections.
+pub(crate) struct ConnectionState {
     pub(in crate::client) path: BString,
     pub(in crate::client) virtual_host: Option<(String, Option<u16>)>,
     pub(in crate::client) desired_version: Protocol,
     custom_url: Option<BString>,
     pub(in crate::client) mode: ConnectMode,
-}
-
-impl<R, W> Connection<R, W> {
-    /// Return the inner reader and writer
-    pub fn into_inner(self) -> (R, W) {
-        (self.line_provider.into_inner(), self.writer)
-    }
-
-    /// Optionally set the URL to be returned when asked for it if `Some` or calculate a default for `None`.
-    ///
-    /// The URL is required as parameter for authentication helpers which are called in transports
-    /// that support authentication. Even though plain git transports don't support that, this
-    /// may well be the case in custom transports.
-    pub fn custom_url(mut self, url: Option<BString>) -> Self {
-        self.custom_url = url;
-        self
-    }
 }
 
 mod message {
@@ -109,7 +87,7 @@ mod message {
         #[test]
         fn version_2_without_host_and_version() {
             assert_eq!(
-                git::message::connect(Service::UploadPack, Protocol::V2, b"hello\\world", None, &[]),
+                git::message::connect(Service::UploadPack, Protocol::V2, br"hello\world", None, &[]),
                 "git-upload-pack hello\\world\0\0version=2\0"
             );
         }
@@ -132,7 +110,7 @@ mod message {
                 git::message::connect(
                     Service::UploadPack,
                     Protocol::V1,
-                    b"hello\\world",
+                    br"hello\world",
                     Some(&("host".into(), None)),
                     &[]
                 ),
@@ -145,7 +123,7 @@ mod message {
                 git::message::connect(
                     Service::UploadPack,
                     Protocol::V1,
-                    b"hello\\world",
+                    br"hello\world",
                     Some(&("host".into(), None)),
                     &[("key", Some("value")), ("value-only", None)]
                 ),
@@ -158,7 +136,7 @@ mod message {
                 git::message::connect(
                     Service::UploadPack,
                     Protocol::V1,
-                    b"hello\\world",
+                    br"hello\world",
                     Some(&("host".into(), Some(404))),
                     &[]
                 ),
@@ -183,10 +161,10 @@ mod message {
     }
 }
 
+///
 #[cfg(feature = "async-client")]
-mod async_io;
+pub mod async_io;
 
+///
 #[cfg(feature = "blocking-client")]
-mod blocking_io;
-#[cfg(feature = "blocking-client")]
-pub use blocking_io::connect;
+pub mod blocking_io;

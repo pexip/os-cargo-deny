@@ -13,9 +13,9 @@
 edition = "2021"
 rust-version = "1.66.0"
 name = "ring"
-version = "0.17.13"
+version = "0.17.14"
 build = "build.rs"
-links = "ring_core_0_17_13_"
+links = "ring_core_0_17_14_"
 include = [
     "LICENSE",
     "LICENSE-other-bits",

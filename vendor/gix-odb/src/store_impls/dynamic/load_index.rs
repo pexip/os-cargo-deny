@@ -165,7 +165,7 @@ impl super::Store {
             }
             if previous_state_id == index.state_id() {
                 let potentially_new_index = self.index.load();
-                if Arc::as_ptr(&potentially_new_index) == Arc::as_ptr(&index) {
+                if std::ptr::eq(Arc::as_ptr(&potentially_new_index), Arc::as_ptr(&index)) {
                     // There isn't a new index with which to retry the whole ordeal, so nothing could be done here.
                     return false;
                 } else {
@@ -251,9 +251,11 @@ impl super::Store {
             .collect();
 
         let mut new_slot_map_indices = Vec::new(); // these indices into the slot map still exist there/didn't change
-        let mut index_paths_to_add = was_uninitialized
-            .then(|| VecDeque::with_capacity(indices_by_modification_time.len()))
-            .unwrap_or_default();
+        let mut index_paths_to_add = if was_uninitialized {
+            VecDeque::with_capacity(indices_by_modification_time.len())
+        } else {
+            Default::default()
+        };
 
         // Figure out this number based on what we see while handling the existing indices
         let mut num_loaded_indices = 0;
@@ -389,12 +391,16 @@ impl super::Store {
                 generation,
                 // if there was a prior generation, some indices might already be loaded. But we deal with it by trying to load the next index then,
                 // until we find one.
-                next_index_to_load: index_unchanged
-                    .then(|| Arc::clone(&index.next_index_to_load))
-                    .unwrap_or_default(),
-                loaded_indices: index_unchanged
-                    .then(|| Arc::clone(&index.loaded_indices))
-                    .unwrap_or_else(|| Arc::new(num_loaded_indices.into())),
+                next_index_to_load: if index_unchanged {
+                    Arc::clone(&index.next_index_to_load)
+                } else {
+                    Default::default()
+                },
+                loaded_indices: if index_unchanged {
+                    Arc::clone(&index.loaded_indices)
+                } else {
+                    Arc::new(num_loaded_indices.into())
+                },
                 num_indices_currently_being_loaded: Default::default(),
             });
             self.index.store(new_index);
@@ -418,7 +424,7 @@ impl super::Store {
                 // Safety: can't race as we hold the lock, have to set the generation beforehand to help avoid others to observe the value.
                 slot.generation.store(generation, Ordering::SeqCst);
                 *files_mut = None;
-            };
+            }
             slot.files.store(files);
         }
 
@@ -728,6 +734,7 @@ impl PartialEq<Self> for Either {
     }
 }
 
+#[allow(clippy::non_canonical_partial_ord_impl)]
 impl PartialOrd<Self> for Either {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.path().cmp(other.path()))

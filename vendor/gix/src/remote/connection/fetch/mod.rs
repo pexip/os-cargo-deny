@@ -1,4 +1,7 @@
-use gix_protocol::transport::client::Transport;
+#[cfg(feature = "async-network-client")]
+use gix_transport::client::async_io::Transport;
+#[cfg(feature = "blocking-network-client")]
+use gix_transport::client::blocking_io::Transport;
 
 use crate::{
     bstr::BString,
@@ -73,7 +76,7 @@ pub struct Outcome {
     /// The result of the initial mapping of references, the prerequisite for any fetch.
     pub ref_map: RefMap,
     /// The outcome of the handshake with the server.
-    pub handshake: gix_protocol::handshake::Outcome,
+    pub handshake: gix_protocol::Handshake,
     /// The status of the operation to indicate what happened.
     pub status: Status,
 }

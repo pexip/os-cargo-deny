@@ -1,5 +1,5 @@
-![Rust](https://github.com/Byron/prodash/workflows/Rust/badge.svg)
-[![Crates.io](https://img.shields.io/crates/v/prodash.svg)](https://crates.io/crates/prodash)
+[![CI](https://github.com/GitoxideLabs/prodash/actions/workflows/ci.yml/badge.svg)](https://github.com/GitoxideLabs/prodash/actions)
+[![crates.io](https://img.shields.io/crates/v/prodash.svg)](https://crates.io/crates/prodash)
 
 **prodash** allows to integrate progress reporting into concurrent applications and provides renderers for displaying it in various ways.
 
@@ -23,7 +23,7 @@ This crate comes with various cargo features to tailor it to your needs.
   * **progress-tree-hp-hashmap** - high-performance registry for pregree tree nodes in case of ultra-heavy insertions and deletions.
     * If this is necessary, it's probably impossible to resonably visualize the progress tree anyway, but the option exists nonetheless in case
       it is ever needed. Historically, this was the default, but now it seems simpler is better and just fine for typical programs.
-  * **progress-tree-log** _(default)_
+  * **progress-tree-log**
     * If logging in the `log` crate is initialized, a `log` will be used to output all messages provided to
       `tree::Item::message(…)` and friends. No actual progress is written.
     * May interfere with `render-tui` or `render-line`, or any renderer outputting to the console.
@@ -71,7 +71,7 @@ This crate comes with various cargo features to tailor it to your needs.
 * **unit-human**
   * Display counts in a way that is easier to grasp for humans, using the tiny `human_format` crate.
 * **unit-duration**
-  * Displays time in seconds like '_5m4s_' using the tiny `humantime` crate.
+  * Displays time in seconds like '_5m4s_' using the `jiff` crate's friendly duration format.
 
 ## Features
 

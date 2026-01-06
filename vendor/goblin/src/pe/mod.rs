@@ -9,10 +9,12 @@ use alloc::borrow::Cow;
 use alloc::string::String;
 use alloc::vec::Vec;
 use log::warn;
+use resource::ResourceData;
 
 pub mod authenticode;
 pub mod certificate_table;
 pub mod characteristic;
+pub mod clr;
 pub mod data_directories;
 pub mod debug;
 pub mod dll_characteristic;
@@ -20,9 +22,11 @@ pub mod exception;
 pub mod export;
 pub mod header;
 pub mod import;
+pub mod load_config;
 pub mod optional_header;
 pub mod options;
 pub mod relocation;
+pub mod resource;
 pub mod section_table;
 pub mod subsystem;
 pub mod symbol;
@@ -31,10 +35,12 @@ pub mod utils;
 
 use crate::container;
 use crate::error;
+use crate::options::Permissive;
 use crate::pe::utils::pad;
 use crate::strtab;
+use options::ParseMode;
 
-use scroll::{ctx, Pwrite};
+use scroll::{Pwrite, ctx};
 
 use log::debug;
 
@@ -56,10 +62,10 @@ pub struct PE<'a> {
     pub is_lib: bool,
     /// Whether the binary is 64-bit (PE32+)
     pub is_64: bool,
-    /// the entry point of the binary
-    pub entry: usize,
-    /// The binary's RVA, or image base - useful for computing virtual addreses
-    pub image_base: usize,
+    /// The entry point RVA of the binary
+    pub entry: u32,
+    /// The binary's VA, or image base - useful for computing virtual addreses
+    pub image_base: u64,
     /// Data about any exported symbols in this binary (e.g., if it's a `dll`)
     pub export_data: Option<export::ExportData<'a>>,
     /// Data for any imported symbols, and from which `dll`, etc., in this binary
@@ -76,8 +82,16 @@ pub struct PE<'a> {
     pub tls_data: Option<tls::TlsData<'a>>,
     /// Exception handling and stack unwind information, if any, contained in the PE header
     pub exception_data: Option<exception::ExceptionData<'a>>,
+    /// Base relocation data if any
+    pub relocation_data: Option<relocation::RelocationData<'a>>,
+    /// Load config data if any
+    pub load_config_data: Option<load_config::LoadConfigData>,
     /// Certificates present, if any, described by the Certificate Table
     pub certificates: certificate_table::CertificateDirectoryTable<'a>,
+    /// Resource information if any
+    pub resource_data: Option<ResourceData<'a>>,
+    /// CLR managed data if present
+    pub clr_data: Option<clr::ClrData<'a>>,
 }
 
 impl<'a> PE<'a> {
@@ -88,7 +102,7 @@ impl<'a> PE<'a> {
 
     /// Reads a PE binary from the underlying `bytes`
     pub fn parse_with_opts(bytes: &'a [u8], opts: &options::ParseOptions) -> error::Result<Self> {
-        let header = header::Header::parse(bytes)?;
+        let header = header::Header::parse_with_opts(bytes, opts)?;
         let mut authenticode_excluded_sections = None;
 
         debug!("{:#?}", header);
@@ -98,7 +112,7 @@ impl<'a> PE<'a> {
         let offset =
             &mut (optional_header_offset + header.coff_header.size_of_optional_header as usize);
 
-        let sections = header.coff_header.sections(bytes, offset)?;
+        let sections = header.coff_header.sections_with_opts(bytes, offset, opts)?;
         let is_lib = characteristic::is_dll(header.coff_header.characteristics);
         let mut entry = 0;
         let mut image_base = 0;
@@ -111,7 +125,11 @@ impl<'a> PE<'a> {
         let mut debug_data = None;
         let mut tls_data = None;
         let mut exception_data = None;
+        let mut relocation_data = None;
+        let mut load_config_data = None;
         let mut certificates = Default::default();
+        let mut resource_data = Default::default();
+        let mut clr_data = Default::default();
         let mut is_64 = false;
         if let Some(optional_header) = header.optional_header {
             // Sections we are assembling through the parsing, eventually, it will be passed
@@ -142,12 +160,12 @@ impl<'a> PE<'a> {
                     return Err(error::Error::Malformed(format!(
                         "Unsupported header magic ({:#x})",
                         magic
-                    )))
+                    )));
                 }
             };
 
-            entry = optional_header.standard_fields.address_of_entry_point as usize;
-            image_base = optional_header.windows_fields.image_base as usize;
+            entry = optional_header.standard_fields.address_of_entry_point;
+            image_base = optional_header.windows_fields.image_base;
             is_64 = optional_header.container()? == container::Container::Big;
             debug!(
                 "entry {:#x} image_base {:#x} is_64: {}",
@@ -211,35 +229,36 @@ impl<'a> PE<'a> {
             }
             debug!("imports: {:#?}", imports);
             if let Some(&debug_table) = optional_header.data_directories.get_debug_table() {
-                debug_data = Some(debug::DebugData::parse_with_opts(
+                debug_data = debug::DebugData::parse_with_opts(
                     bytes,
                     debug_table,
                     &sections,
                     file_alignment,
                     opts,
-                )?);
+                )
+                .map(Some)
+                .or_permissive_and_default(
+                    opts.parse_mode.is_permissive(),
+                    "Failed to parse resource data",
+                )?;
             }
 
             if let Some(tls_table) = optional_header.data_directories.get_tls_table() {
-                tls_data = if is_64 {
-                    tls::TlsData::parse_with_opts::<u64>(
-                        bytes,
-                        image_base,
-                        tls_table,
-                        &sections,
-                        file_alignment,
-                        opts,
-                    )?
-                } else {
-                    tls::TlsData::parse_with_opts::<u32>(
-                        bytes,
-                        image_base,
-                        &tls_table,
-                        &sections,
-                        file_alignment,
-                        opts,
-                    )?
-                };
+                tls_data = tls::TlsData::parse_with_opts(
+                    bytes,
+                    image_base,
+                    tls_table,
+                    &sections,
+                    file_alignment,
+                    opts,
+                    is_64,
+                ) // Result<Option<T>>
+                .or_else(|e| {
+                    opts.parse_mode
+                        .is_permissive()
+                        .then_some(None) // Permissive=true -> Some(None)
+                        .ok_or(e) // Some(None) -> Ok(None), None -> Err(e)
+                })?;
                 debug!("tls data: {:#?}", tls_data);
             }
 
@@ -249,14 +268,73 @@ impl<'a> PE<'a> {
                 if let Some(&exception_table) =
                     optional_header.data_directories.get_exception_table()
                 {
-                    exception_data = Some(exception::ExceptionData::parse_with_opts(
+                    exception_data = exception::ExceptionData::parse_with_opts(
                         bytes,
                         exception_table,
                         &sections,
                         file_alignment,
                         opts,
-                    )?);
+                    )
+                    .map(Some)
+                    .or_permissive_and_default(
+                        opts.parse_mode.is_permissive(),
+                        "Failed to parse security data",
+                    )?;
                 }
+            }
+
+            if let Some(&baserelocs_dir) =
+                optional_header.data_directories.get_base_relocation_table()
+            {
+                relocation_data = relocation::RelocationData::parse_with_opts(
+                    bytes,
+                    baserelocs_dir,
+                    &sections,
+                    file_alignment,
+                    opts,
+                )
+                .map(Some)
+                .or_permissive_and_default(
+                    opts.parse_mode.is_permissive(),
+                    "Failed to parse base relocation data",
+                )?;
+            }
+
+            if let Some(&load_config_dir) = optional_header.data_directories.get_load_config_table()
+            {
+                debug!(
+                    "LoadConfig directory found: virtual_address={:#x}, size={:#x}",
+                    load_config_dir.virtual_address, load_config_dir.size
+                );
+                load_config_data = load_config::LoadConfigData::parse_with_opts(
+                    bytes,
+                    load_config_dir,
+                    &sections,
+                    file_alignment,
+                    opts,
+                    is_64,
+                )
+                .map(Some)
+                .or_permissive_and_default(
+                    opts.parse_mode.is_permissive(),
+                    "Failed to parse load config data",
+                )?;
+            }
+
+            if let Some(com_descriptor) = optional_header.data_directories.get_clr_runtime_header()
+            {
+                clr_data = clr::ClrData::parse_with_opts(
+                    bytes,
+                    &com_descriptor,
+                    &sections,
+                    file_alignment,
+                    opts,
+                )
+                .map(Some)
+                .or_permissive_and_default(
+                    opts.parse_mode.is_permissive(),
+                    "Failed to parse CLR runtime data",
+                )?;
             }
 
             // Parse attribute certificates unless opted out of
@@ -264,11 +342,19 @@ impl<'a> PE<'a> {
                 if let Some(&certificate_table) =
                     optional_header.data_directories.get_certificate_table()
                 {
-                    certificates = certificate_table::enumerate_certificates(
+                    let certificates_result = certificate_table::enumerate_certificates(
                         bytes,
                         certificate_table.virtual_address,
                         certificate_table.size,
-                    )?;
+                    );
+
+                    certificates = match opts.parse_mode {
+                        ParseMode::Strict => certificates_result?,
+                        ParseMode::Permissive => certificates_result.unwrap_or_else(|err| {
+                            warn!("Cannot parse CertificateTable: {:?}", err);
+                            Default::default()
+                        }),
+                    };
 
                     certificate_table.size as usize
                 } else {
@@ -277,6 +363,18 @@ impl<'a> PE<'a> {
             } else {
                 0
             };
+
+            if let Some(&resource_table) = optional_header.data_directories.get_resource_table() {
+                let data = resource::ResourceData::parse_with_opts(
+                    bytes,
+                    resource_table,
+                    &sections,
+                    file_alignment,
+                    opts,
+                )?;
+                resource_data = Some(data);
+                debug!("resource_data data: {:#?}", data.version_info);
+            }
 
             authenticode_excluded_sections = Some(authenticode::ExcludedSections::new(
                 checksum,
@@ -304,7 +402,11 @@ impl<'a> PE<'a> {
             debug_data,
             tls_data,
             exception_data,
+            relocation_data,
+            load_config_data,
             certificates,
+            resource_data,
+            clr_data,
         })
     }
 
@@ -380,9 +482,10 @@ impl<'a> PE<'a> {
 
             let written_data_size = file_offset - file_section_offset;
             if ondisk_size != written_data_size {
-                warn!("Original PE is inefficient or bug (on-disk data size in PE: {:#x}), we wrote {:#x} bytes",
-                    ondisk_size,
-                    written_data_size);
+                warn!(
+                    "Original PE is inefficient or bug (on-disk data size in PE: {:#x}), we wrote {:#x} bytes",
+                    ondisk_size, written_data_size
+                );
             }
         }
 
@@ -522,10 +625,7 @@ pub struct TE<'a> {
 impl<'a> TE<'a> {
     /// Reads a TE binary from the underlying `bytes`
     pub fn parse(bytes: &'a [u8]) -> error::Result<Self> {
-        let opts = &options::ParseOptions {
-            resolve_rva: false,
-            parse_attribute_certificates: false,
-        };
+        let opts = &options::ParseOptions::te();
 
         let mut offset = 0;
 
@@ -537,19 +637,13 @@ impl<'a> TE<'a> {
         let sections = header.sections(bytes, &mut offset)?;
 
         // Parse the debug data. Must adjust offsets before parsing the image_debug_directory
-        let mut debug_data = debug::DebugData::default();
-        debug_data.image_debug_directory = debug::ImageDebugDirectory::parse_with_opts(
+        let debug_data = debug::DebugData::parse_with_opts_and_fixup(
             bytes,
             header.debug_dir,
             &sections,
             0,
             opts,
-        )?;
-        TE::fixup_debug_data(&mut debug_data, rva_offset as u32);
-        debug_data.codeview_pdb70_debug_info = debug::CodeviewPDB70DebugInfo::parse_with_opts(
-            bytes,
-            &debug_data.image_debug_directory,
-            opts,
+            rva_offset as u32,
         )?;
 
         Ok(TE {
@@ -558,33 +652,6 @@ impl<'a> TE<'a> {
             debug_data,
             rva_offset,
         })
-    }
-
-    /// Adjust all addresses in the TE binary debug data.
-    fn fixup_debug_data(dd: &mut debug::DebugData, rva_offset: u32) {
-        debug!(
-            "ImageDebugDirectory address of raw data fixed up from: 0x{:X} to 0x{:X}",
-            dd.image_debug_directory.address_of_raw_data,
-            dd.image_debug_directory
-                .address_of_raw_data
-                .wrapping_sub(rva_offset),
-        );
-        dd.image_debug_directory.address_of_raw_data = dd
-            .image_debug_directory
-            .address_of_raw_data
-            .wrapping_sub(rva_offset);
-
-        debug!(
-            "ImageDebugDirectory pointer to raw data fixed up from: 0x{:X} to 0x{:X}",
-            dd.image_debug_directory.pointer_to_raw_data,
-            dd.image_debug_directory
-                .pointer_to_raw_data
-                .wrapping_sub(rva_offset),
-        );
-        dd.image_debug_directory.pointer_to_raw_data = dd
-            .image_debug_directory
-            .pointer_to_raw_data
-            .wrapping_sub(rva_offset);
     }
 }
 
@@ -625,8 +692,8 @@ impl<'a> Coff<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::Coff;
-    use super::PE;
+    use super::*;
+    use crate::pe::options::{ParseMode, ParseOptions};
 
     static INVALID_DOS_SIGNATURE: [u8; 512] = [
         0x3D, 0x5A, 0x90, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0x00,
@@ -734,6 +801,44 @@ mod tests {
         0x0, 0x0, 0x0, 0x45, 0x78, 0x69, 0x74, 0x50, 0x72, 0x6f, 0x63, 0x65, 0x73, 0x73, 0x0,
     ];
 
+    static HEADERONLY_EMPTY_PE64: &[u8; 512] = &[
+        0x4D, 0x5A, 0x78, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x78, 0x00, 0x00, 0x00, 0x0E, 0x1F, 0xBA, 0x0E, 0x00, 0xB4, 0x09, 0xCD, 0x21, 0xB8, 0x01,
+        0x4C, 0xCD, 0x21, 0x54, 0x68, 0x69, 0x73, 0x20, 0x70, 0x72, 0x6F, 0x67, 0x72, 0x61, 0x6D,
+        0x20, 0x63, 0x61, 0x6E, 0x6E, 0x6F, 0x74, 0x20, 0x62, 0x65, 0x20, 0x72, 0x75, 0x6E, 0x20,
+        0x69, 0x6E, 0x20, 0x44, 0x4F, 0x53, 0x20, 0x6D, 0x6F, 0x64, 0x65, 0x2E, 0x24, 0x00, 0x00,
+        0x50, 0x45, 0x00, 0x00, 0x64, 0x86, 0x00, 0x00, 0x5D, 0x3F, 0xC8, 0x19, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x00, 0x22, 0x00, 0x0B, 0x02, 0x0E, 0x00, 0x00, 0x02,
+        0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20, 0x10, 0x00, 0x00, 0x00,
+        0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x01, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00,
+        0x00, 0x02, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x03, 0x00, 0x60, 0x81, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00,
+    ];
+
     #[test]
     fn string_table_excludes_length() {
         let coff = Coff::parse(&&COFF_FILE_SINGLE_STRING_IN_STRING_TABLE[..]).unwrap();
@@ -768,5 +873,54 @@ mod tests {
         if let Ok(_) = PE::parse(&INVALID_PE_SIGNATURE) {
             panic!("must not parse PE with invalid PE header");
         }
+    }
+
+    #[test]
+    fn pe64_image_base_and_entry_nonoverflows() {
+        let binary = PE::parse(HEADERONLY_EMPTY_PE64).unwrap();
+        assert_eq!(binary.entry, 0x1020u32);
+        assert_eq!(binary.image_base, 0x140000000u64);
+    }
+
+    #[test]
+    fn test_packed_binary_permissive_parsing() {
+        // Create a minimal PE with a PE pointer that's before the DOS stub offset
+        // This simulates a packed binary scenario
+        let mut packed_pe = vec![0u8; 0x100];
+
+        // DOS header with MZ signature
+        packed_pe[0] = 0x4D; // 'M'
+        packed_pe[1] = 0x5A; // 'Z'
+
+        // Set PE pointer to 0x30 (before DOS_STUB_OFFSET which is 0x40)
+        packed_pe[0x3C] = 0x30;
+        packed_pe[0x3D] = 0x00;
+        packed_pe[0x3E] = 0x00;
+        packed_pe[0x3F] = 0x00;
+
+        // PE signature at offset 0x30
+        packed_pe[0x30] = 0x50; // 'P'
+        packed_pe[0x31] = 0x45; // 'E'
+        packed_pe[0x32] = 0x00;
+        packed_pe[0x33] = 0x00;
+
+        // Minimal COFF header (machine type, etc.)
+        packed_pe[0x34] = 0x4C; // IMAGE_FILE_MACHINE_I386
+        packed_pe[0x35] = 0x01;
+
+        // Test strict parsing - should fail
+        let strict_result = PE::parse(&packed_pe);
+        assert!(
+            strict_result.is_err(),
+            "Strict parsing should fail for packed binary"
+        );
+
+        // Test permissive parsing - should succeed
+        let permissive_opts = ParseOptions::default().with_parse_mode(ParseMode::Permissive);
+        let permissive_result = PE::parse_with_opts(&packed_pe, &permissive_opts);
+        assert!(
+            permissive_result.is_ok(),
+            "Permissive parsing should succeed for packed binary"
+        );
     }
 }

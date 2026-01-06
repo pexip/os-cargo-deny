@@ -42,7 +42,13 @@ impl WorktreeRoots {
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Debug)]
 pub enum Data {
     /// The data to use for diffing was written into the buffer that was passed during the call to [`Pipeline::convert_to_diffable()`].
-    Buffer,
+    Buffer {
+        /// If `true`, a [binary to text filter](Driver::binary_to_text_command) was used to obtain the buffer,
+        /// making it a derived value.
+        ///
+        /// Applications should check for this to avoid treating the buffer content as (original) resource content.
+        is_derived: bool,
+    },
     /// The size that the binary blob had at the given revision, without having applied filters, as it's either
     /// considered binary or above the big-file threshold.
     ///
@@ -129,6 +135,8 @@ pub mod convert_to_diffable {
     pub enum Error {
         #[error("Entry at '{rela_path}' must be regular file or symlink, but was {actual:?}")]
         InvalidEntryKind { rela_path: BString, actual: EntryKind },
+        #[error("Entry at '{rela_path}' is declared as symlink but symlinks are disabled via core.symlinks")]
+        SymlinkDisabled { rela_path: BString },
         #[error("Entry at '{rela_path}' could not be read as symbolic link")]
         ReadLink { rela_path: BString, source: std::io::Error },
         #[error("Entry at '{rela_path}' could not be opened for reading or read from")]
@@ -234,7 +242,7 @@ impl Pipeline {
         out: &mut Vec<u8>,
     ) -> Result<Outcome, convert_to_diffable::Error> {
         let is_symlink = match mode {
-            EntryKind::Link if self.options.fs.symlink => true,
+            EntryKind::Link => true,
             EntryKind::Blob | EntryKind::BlobExecutable => false,
             _ => {
                 return Err(convert_to_diffable::Error::InvalidEntryKind {
@@ -266,6 +274,11 @@ impl Pipeline {
                 self.path.push(root);
                 self.path.push(gix_path::from_bstr(rela_path));
                 let data = if is_symlink {
+                    if !self.options.fs.symlink {
+                        return Err(convert_to_diffable::Error::SymlinkDisabled {
+                            rela_path: rela_path.to_owned(),
+                        });
+                    }
                     let target = none_if_missing(std::fs::read_link(&self.path)).map_err(|err| {
                         convert_to_diffable::Error::ReadLink {
                             rela_path: rela_path.to_owned(),
@@ -274,7 +287,7 @@ impl Pipeline {
                     })?;
                     target.map(|target| {
                         out.extend_from_slice(gix_path::into_bstr(target).as_ref());
-                        Data::Buffer
+                        Data::Buffer { is_derived: false }
                     })
                 } else {
                     let need_size_only = is_binary == Some(true);
@@ -312,7 +325,7 @@ impl Pipeline {
                                         None
                                     } else {
                                         run_cmd(rela_path, cmd, out)?;
-                                        Some(Data::Buffer)
+                                        Some(Data::Buffer { is_derived: true })
                                     }
                                 }
                                 None => {
@@ -370,7 +383,7 @@ impl Pipeline {
                                                 out.clear();
                                                 Data::Binary { size }
                                             } else {
-                                                Data::Buffer
+                                                Data::Buffer { is_derived: false }
                                             })
                                         }
                                         None => None,
@@ -395,7 +408,7 @@ impl Pipeline {
                         && header.size > self.options.large_file_threshold_bytes
                     {
                         is_binary = Some(true);
-                    };
+                    }
                     let data = if is_binary == Some(true) {
                         Data::Binary { size: header.size }
                     } else {
@@ -403,6 +416,7 @@ impl Pipeline {
                             .try_find(id, out)
                             .map_err(gix_object::find::existing_object::Error::Find)?
                             .ok_or_else(|| gix_object::find::existing_object::Error::NotFound { oid: id.to_owned() })?;
+                        let mut is_derived = false;
                         if matches!(mode, EntryKind::Blob | EntryKind::BlobExecutable)
                             && convert == Mode::ToWorktreeAndBinaryToText
                             || (convert == Mode::ToGitUnlessBinaryToTextIsPresent
@@ -460,39 +474,38 @@ impl Pipeline {
                                     })?;
                                     out.clear();
                                     run_cmd(rela_path, cmd, out)?;
+                                    is_derived = true;
                                 }
-                                None => {
-                                    match res {
-                                        ToWorktreeOutcome::Unchanged(_) => {}
-                                        ToWorktreeOutcome::Buffer(src) => {
-                                            out.clear();
-                                            out.try_reserve(src.len())?;
-                                            out.extend_from_slice(src);
-                                        }
-                                        ToWorktreeOutcome::Process(MaybeDelayed::Immediate(mut stream)) => {
-                                            std::io::copy(&mut stream, out).map_err(|err| {
-                                                convert_to_diffable::Error::StreamCopy {
-                                                    rela_path: rela_path.to_owned(),
-                                                    source: err,
-                                                }
-                                            })?;
-                                        }
-                                        ToWorktreeOutcome::Process(MaybeDelayed::Delayed(_)) => {
-                                            unreachable!("we prohibit this")
-                                        }
-                                    };
-                                }
+                                None => match res {
+                                    ToWorktreeOutcome::Unchanged(_) => {}
+                                    ToWorktreeOutcome::Buffer(src) => {
+                                        out.clear();
+                                        out.try_reserve(src.len())?;
+                                        out.extend_from_slice(src);
+                                    }
+                                    ToWorktreeOutcome::Process(MaybeDelayed::Immediate(mut stream)) => {
+                                        std::io::copy(&mut stream, out).map_err(|err| {
+                                            convert_to_diffable::Error::StreamCopy {
+                                                rela_path: rela_path.to_owned(),
+                                                source: err,
+                                            }
+                                        })?;
+                                    }
+                                    ToWorktreeOutcome::Process(MaybeDelayed::Delayed(_)) => {
+                                        unreachable!("we prohibit this")
+                                    }
+                                },
                             }
                         }
 
-                        if driver.map_or(true, |d| d.binary_to_text_command.is_none())
+                        if driver.is_none_or(|d| d.binary_to_text_command.is_none())
                             && is_binary.unwrap_or_else(|| is_binary_buf(out))
                         {
                             let size = out.len() as u64;
                             out.clear();
                             Data::Binary { size }
                         } else {
-                            Data::Buffer
+                            Data::Buffer { is_derived }
                         }
                     };
                     Some(data)

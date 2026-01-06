@@ -3,9 +3,8 @@ use std::borrow::Cow;
 use bstr::BStr;
 use gix_features::threading::OwnShared;
 
-use crate::file::Metadata;
 use crate::{
-    file::{self, rename_section, write::ends_with_newline, SectionBodyIdsLut, SectionId, SectionMut},
+    file::{self, rename_section, write::ends_with_newline, Metadata, SectionBodyIdsLut, SectionId, SectionMut},
     lookup,
     parse::{section, Event, FrontMatterEvents},
     File,
@@ -86,10 +85,8 @@ impl<'event> File<'event> {
             .section_ids_by_name_and_subname(name.as_ref(), subsection_name)
             .ok()
             .and_then(|it| {
-                it.rev().find(|id| {
-                    let s = &self.sections[id];
-                    filter(s.meta())
-                })
+                it.rev()
+                    .find(|id| self.sections.get(id).is_some_and(|s| filter(s.meta())))
             }) {
             Some(id) => {
                 let nl = self.detect_newline_style_smallvec();
@@ -305,7 +302,7 @@ impl<'event> File<'event> {
             .section_ids_by_name_and_subname(name, subsection_name)
             .ok()?
             .rev()
-            .find(|id| filter(self.sections.get(id).expect("each id has a section").meta()))?;
+            .find(|id| self.sections.get(id).is_some_and(|section| filter(section.meta())))?;
         self.section_order.remove(
             self.section_order
                 .iter()
@@ -379,7 +376,7 @@ impl<'event> File<'event> {
             nl: &impl AsRef<[u8]>,
         ) {
             if !ends_with_newline(lhs.as_ref(), nl, true)
-                && !rhs.first().map_or(true, |e| e.to_bstr_lossy().starts_with(nl.as_ref()))
+                && !rhs.first().is_none_or(|e| e.to_bstr_lossy().starts_with(nl.as_ref()))
             {
                 lhs.push(Event::Newline(Cow::Owned(nl.as_ref().into())));
             }

@@ -5,10 +5,11 @@
 //! 1. [`mark_complete_and_common_ref()`] - initialize the [`negotiator`](gix_negotiate::Negotiator) with all state known on the remote.
 //! 2. [`add_wants()`] is called if the call at 1) returned [`Action::MustNegotiate`].
 //! 3. [`one_round()`] is called for each negotiation round, providing information if the negotiation is done.
+use std::borrow::Cow;
+
 use gix_date::SecondsSinceUnixEpoch;
 use gix_negotiate::Flags;
 use gix_ref::file::ReferenceExt;
-use std::borrow::Cow;
 
 use crate::fetch::{refmap, RefMap, Shallow, Tags};
 
@@ -110,7 +111,7 @@ pub struct Round {
 /// * `graph`
 ///     - The commit-graph for use by the `negotiator` - we populate it with tips to initialize the graph traversal.
 /// * `ref_map`
-///     - The references known on the remote, as previously obtained with [`RefMap::new()`].
+///     - The references known on the remote, as previously obtained with [`RefMap::fetch()`].
 /// * `shallow`
 ///     - How to deal with shallow repositories. It does affect how negotiations are performed.
 /// * `mapping_is_ignored`
@@ -155,8 +156,8 @@ where
     // and keep the oldest one.
     let mut cutoff_date = None::<SecondsSinceUnixEpoch>;
     let mut num_mappings_with_change = 0;
-    let mut remote_ref_target_known: Vec<bool> = std::iter::repeat(false).take(ref_map.mappings.len()).collect();
-    let mut remote_ref_included: Vec<bool> = std::iter::repeat(false).take(ref_map.mappings.len()).collect();
+    let mut remote_ref_target_known: Vec<bool> = std::iter::repeat_n(false, ref_map.mappings.len()).collect();
+    let mut remote_ref_included: Vec<bool> = std::iter::repeat_n(false, ref_map.mappings.len()).collect();
 
     for (mapping_idx, mapping) in ref_map.mappings.iter().enumerate() {
         let want_id = mapping.remote.as_id();
@@ -170,7 +171,7 @@ where
         if !mapping_is_ignored(mapping) {
             remote_ref_included[mapping_idx] = true;
             // Like git, we don't let known unchanged mappings participate in the tree traversal
-            if want_id.zip(have_id).map_or(true, |(want, have)| want != have) {
+            if want_id.zip(have_id).is_none_or(|(want, have)| want != have) {
                 num_mappings_with_change += 1;
             }
         }
@@ -372,11 +373,7 @@ fn mark_all_refs_in_repo(
     let _span = gix_trace::detail!("mark_all_refs");
     for local_ref in store.iter()?.all()? {
         let mut local_ref = local_ref?;
-        let id = local_ref.peel_to_id_in_place_packed(
-            store,
-            objects,
-            store.cached_packed_buffer()?.as_ref().map(|b| &***b),
-        )?;
+        let id = local_ref.peel_to_id_packed(store, objects, store.cached_packed_buffer()?.as_ref().map(|b| &***b))?;
         let mut is_complete = false;
         if let Some(commit) = graph
             .get_or_insert_commit(id, |md| {

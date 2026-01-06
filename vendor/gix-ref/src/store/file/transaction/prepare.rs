@@ -159,7 +159,7 @@ impl Transaction<'_, '_> {
                         let full_name = change.name();
                         return Err(Error::MustExist { full_name, expected });
                     }
-                };
+                }
 
                 fn new_would_change_existing(new: &Target, existing: &Target) -> (bool, bool) {
                     match (new, existing) {
@@ -182,7 +182,7 @@ impl Transaction<'_, '_> {
                     let mut lock = lock.take().map_or_else(obtain_lock, Ok)?;
 
                     lock.with_mut(|file| match new {
-                        Target::Object(oid) => write!(file, "{oid}"),
+                        Target::Object(oid) => writeln!(file, "{oid}"),
                         Target::Symbolic(name) => writeln!(file, "ref: {}", name.0),
                     })?;
                     Some(lock.close()?)
@@ -386,7 +386,7 @@ impl Transaction<'_, '_> {
                     other => other,
                 };
                 return Err(err);
-            };
+            }
 
             // traverse parent chain from leaf/peeled ref and set the leaf previous oid accordingly
             // to help with their reflog entries

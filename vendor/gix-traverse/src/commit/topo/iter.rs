@@ -1,8 +1,12 @@
-use crate::commit::topo::{Error, Sorting, WalkFlags};
-use crate::commit::{find, Either, Info, Parents, Topo};
 use gix_hash::{oid, ObjectId};
 use gix_revwalk::PriorityQueue;
 use smallvec::SmallVec;
+
+use crate::commit::{
+    find,
+    topo::{Error, Sorting, WalkFlags},
+    Either, Info, Parents, Topo,
+};
 
 pub(in crate::commit) type GenAndCommitTime = (u32, i64);
 
@@ -208,7 +212,7 @@ where
         *i = 0;
         if let Err(e) = self.expand_topo_walk(&commit.id) {
             return Some(Err(e));
-        };
+        }
 
         Some(Ok(commit))
     }
@@ -289,7 +293,7 @@ where
                 }
             }
         }
-    };
+    }
     Ok(parents)
 }
 
@@ -304,7 +308,7 @@ pub(super) fn gen_and_commit_time(c: Either<'_, '_>) -> Result<GenAndCommitTime,
                     Ok(T::Parent { .. }) => continue,
                     Ok(T::Author { .. }) => continue,
                     Ok(T::Committer { signature }) => {
-                        commit_time = signature.time.seconds;
+                        commit_time = signature.seconds();
                         break;
                     }
                     Ok(_unused_token) => break,

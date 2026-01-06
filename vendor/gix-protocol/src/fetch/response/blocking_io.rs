@@ -1,17 +1,17 @@
 use std::io;
 
-use gix_transport::{client, Protocol};
+use crate::transport::client::blocking_io::ExtendedBufRead;
+use crate::transport::{client::MessageKind, Protocol};
 
-use crate::fetch::response::shallow_update_from_line;
 use crate::fetch::{
     response,
-    response::{Acknowledgement, ShallowUpdate, WantedRef},
+    response::{shallow_update_from_line, Acknowledgement, ShallowUpdate, WantedRef},
     Response,
 };
 
 fn parse_v2_section<'a, T>(
     line: &mut String,
-    reader: &mut impl client::ExtendedBufRead<'a>,
+    reader: &mut impl ExtendedBufRead<'a>,
     res: &mut Vec<T>,
     parse: impl Fn(&str) -> Result<T, response::Error>,
 ) -> Result<bool, response::Error> {
@@ -21,7 +21,7 @@ fn parse_v2_section<'a, T>(
         line.clear();
     }
     // End of message, or end of section?
-    Ok(if reader.stopped_at() == Some(client::MessageKind::Delimiter) {
+    Ok(if reader.stopped_at() == Some(MessageKind::Delimiter) {
         // try reading more sections
         reader.reset(Protocol::V2);
         false
@@ -45,7 +45,7 @@ impl Response {
     /// that `git` has to use to predict how many acks are supposed to be read. We also genuinely hope that this covers it all….
     pub fn from_line_reader<'a>(
         version: Protocol,
-        reader: &mut impl client::ExtendedBufRead<'a>,
+        reader: &mut impl ExtendedBufRead<'a>,
         client_expects_pack: bool,
         wants_to_negotiate: bool,
     ) -> Result<Response, response::Error> {
@@ -72,7 +72,7 @@ impl Response {
                             // maybe we saw a shallow flush packet, let's reset and retry
                             debug_assert_eq!(
                                 reader.stopped_at(),
-                                Some(client::MessageKind::Flush),
+                                Some(MessageKind::Flush),
                                 "If this isn't a flush packet, we don't know what's going on"
                             );
                             reader.readline_str(&mut line)?;
@@ -120,7 +120,7 @@ impl Response {
                             io::ErrorKind::UnexpectedEof,
                             "Could not read message headline",
                         )));
-                    };
+                    }
 
                     match line.trim_end() {
                         "acknowledgments" => {

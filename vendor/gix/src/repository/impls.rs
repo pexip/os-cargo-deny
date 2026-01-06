@@ -1,6 +1,7 @@
+use std::ops::DerefMut;
+
 use gix_hash::ObjectId;
 use gix_object::Exists;
-use std::ops::DerefMut;
 
 impl Clone for crate::Repository {
     fn clone(&self) -> Self {
@@ -31,7 +32,7 @@ impl std::fmt::Debug for crate::Repository {
         f.debug_struct("Repository")
             .field("kind", &self.kind())
             .field("git_dir", &self.git_dir())
-            .field("work_dir", &self.work_dir())
+            .field("workdir", &self.workdir())
             .finish()
     }
 }
@@ -106,7 +107,7 @@ impl gix_object::Write for crate::Repository {
     }
 
     fn write_buf(&self, object: gix_object::Kind, from: &[u8]) -> Result<gix_hash::ObjectId, gix_object::write::Error> {
-        let oid = gix_object::compute_hash(self.object_hash(), object, from);
+        let oid = gix_object::compute_hash(self.object_hash(), object, from)?;
         if self.objects.exists(&oid) {
             return Ok(oid);
         }

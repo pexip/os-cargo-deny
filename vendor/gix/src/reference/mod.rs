@@ -65,12 +65,26 @@ impl<'repo> Reference<'repo> {
 /// Peeling
 impl<'repo> Reference<'repo> {
     /// Follow all symbolic targets this reference might point to and peel all annotated tags
-    /// to their first non-tag target, and return it,
+    /// to their first non-tag target, and return it.
     ///
     /// This is useful to learn where this reference is ultimately pointing to after following
     /// the chain of symbolic refs and annotated tags.
+    #[deprecated = "Use `peel_to_id()` instead"]
     pub fn peel_to_id_in_place(&mut self) -> Result<Id<'repo>, peel::Error> {
-        let oid = self.inner.peel_to_id_in_place(&self.repo.refs, &self.repo.objects)?;
+        let oid = self.inner.peel_to_id(&self.repo.refs, &self.repo.objects)?;
+        Ok(Id::from_id(oid, self.repo))
+    }
+
+    /// Follow all symbolic targets this reference might point to and peel all annotated tags
+    /// to their first non-tag target, and return it.
+    ///
+    /// This is useful to learn where this reference is ultimately pointing to after following
+    /// the chain of symbolic refs and annotated tags.
+    ///
+    /// Note that this method mutates `self` in place if it does not already point to a
+    /// non-symbolic object.
+    pub fn peel_to_id(&mut self) -> Result<Id<'repo>, peel::Error> {
+        let oid = self.inner.peel_to_id(&self.repo.refs, &self.repo.objects)?;
         Ok(Id::from_id(oid, self.repo))
     }
 
@@ -79,26 +93,45 @@ impl<'repo> Reference<'repo> {
     ///
     /// This is useful to learn where this reference is ultimately pointing to after following
     /// the chain of symbolic refs and annotated tags.
+    #[deprecated = "Use `peel_to_id_packed()` instead"]
     pub fn peel_to_id_in_place_packed(
         &mut self,
         packed: Option<&gix_ref::packed::Buffer>,
     ) -> Result<Id<'repo>, peel::Error> {
         let oid = self
             .inner
-            .peel_to_id_in_place_packed(&self.repo.refs, &self.repo.objects, packed)?;
+            .peel_to_id_packed(&self.repo.refs, &self.repo.objects, packed)?;
         Ok(Id::from_id(oid, self.repo))
     }
 
-    /// Similar to [`peel_to_id_in_place()`](Reference::peel_to_id_in_place()), but consumes this instance.
+    /// Follow all symbolic targets this reference might point to and peel all annotated tags
+    /// to their first non-tag target, and return it, reusing the `packed` buffer if available.
+    ///
+    /// This is useful to learn where this reference is ultimately pointing to after following
+    /// the chain of symbolic refs and annotated tags.
+    ///
+    /// Note that this method mutates `self` in place if it does not already point to a
+    /// non-symbolic object.
+    pub fn peel_to_id_packed(&mut self, packed: Option<&gix_ref::packed::Buffer>) -> Result<Id<'repo>, peel::Error> {
+        let oid = self
+            .inner
+            .peel_to_id_packed(&self.repo.refs, &self.repo.objects, packed)?;
+        Ok(Id::from_id(oid, self.repo))
+    }
+
+    /// Similar to [`peel_to_id()`](Reference::peel_to_id()), but consumes this instance.
     pub fn into_fully_peeled_id(mut self) -> Result<Id<'repo>, peel::Error> {
-        self.peel_to_id_in_place()
+        self.peel_to_id()
     }
 
     /// Follow this reference's target until it points at an object directly, and peel that object until
     /// its type matches the given `kind`. It's an error to try to peel to a kind that this ref doesn't point to.
     ///
     /// Note that this ref will point to the first target object afterward, which may be a tag. This is different
-    /// from [`peel_to_id_in_place()`](Self::peel_to_id_in_place()) where it will point to the first non-tag object.
+    /// from [`peel_to_id()`](Self::peel_to_id()) where it will point to the first non-tag object.
+    ///
+    /// Note that `git2::Reference::peel` does not "peel in place", but returns a new object
+    /// instead.
     #[doc(alias = "peel", alias = "git2")]
     pub fn peel_to_kind(&mut self, kind: gix_object::Kind) -> Result<Object<'repo>, peel::to_kind::Error> {
         let packed = self.repo.refs.cached_packed_buffer().map_err(|err| {
@@ -147,7 +180,7 @@ impl<'repo> Reference<'repo> {
     ) -> Result<Object<'repo>, peel::to_kind::Error> {
         let target = self
             .inner
-            .follow_to_object_in_place_packed(&self.repo.refs, packed)?
+            .follow_to_object_packed(&self.repo.refs, packed)?
             .attach(self.repo);
         Ok(target.object()?.peel_to_kind(kind)?)
     }
@@ -175,7 +208,7 @@ impl<'repo> Reference<'repo> {
     ) -> Result<Id<'repo>, follow::to_object::Error> {
         Ok(self
             .inner
-            .follow_to_object_in_place_packed(&self.repo.refs, packed)?
+            .follow_to_object_packed(&self.repo.refs, packed)?
             .attach(self.repo))
     }
 

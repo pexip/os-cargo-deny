@@ -1,8 +1,7 @@
 use bstr::BString;
 use gix_transport::{client, Protocol};
 
-use crate::command::Feature;
-use crate::fetch::Response;
+use crate::{command::Feature, fetch::Response};
 
 /// The error returned in the [response module][crate::fetch::response].
 #[derive(Debug, thiserror::Error)]
@@ -28,7 +27,7 @@ impl From<std::io::Error> for Error {
             match err.into_inner() {
                 Some(err) => match err.downcast::<gix_transport::packetline::read::Error>() {
                     Ok(err) => Error::UploadPack(*err),
-                    Err(err) => Error::Io(std::io::Error::new(std::io::ErrorKind::Other, err)),
+                    Err(err) => Error::Io(std::io::Error::other(err)),
                 },
                 None => Error::Io(std::io::ErrorKind::Other.into()),
             }
@@ -161,7 +160,7 @@ impl Response {
                     });
                 }
                 // It's easy to NOT do sideband for us, but then again, everyone supports it.
-                // CORRECTION: If side-band is off, it would send the packfile without packet line encoding,
+                // CORRECTION: If sideband is off, it would send the packfile without packet line encoding,
                 // which is nothing we ever want to deal with (despite it being more efficient). In V2, this
                 // is not even an option anymore, sidebands are always present.
                 if !has("side-band") && !has("side-band-64k") {
@@ -186,7 +185,7 @@ impl Response {
     }
 
     /// Append the given `updates` which may have been obtained from a
-    /// (handshake::Outcome)[crate::handshake::Outcome::v1_shallow_updates].
+    /// (handshake::Outcome)[crate::Handshake::v1_shallow_updates].
     ///
     /// In V2, these are received as part of the pack, but V1 sends them early, so we
     /// offer to re-integrate them here.
@@ -224,7 +223,7 @@ impl Response {
                 }
                 Err(_) => return true,
             },
-        };
+        }
         false
     }
 }

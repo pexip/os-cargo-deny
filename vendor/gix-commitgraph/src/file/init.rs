@@ -1,5 +1,6 @@
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use bstr::ByteSlice;
 
 use crate::{
     file::{
@@ -8,7 +9,6 @@ use crate::{
     },
     File,
 };
-use bstr::ByteSlice;
 
 /// The error used in [`File::at()`].
 #[derive(thiserror::Error, Debug)]
@@ -85,7 +85,7 @@ impl File {
             x => {
                 return Err(Error::UnsupportedVersion(x));
             }
-        };
+        }
         ofs += 1;
 
         let object_hash = gix_hash::Kind::try_from(data[ofs]).map_err(Error::UnsupportedHashVersion)?;

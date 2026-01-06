@@ -69,6 +69,7 @@ mod impls {
         }
     }
 
+    #[allow(clippy::non_canonical_partial_ord_impl)]
     impl PartialOrd for RefSpec {
         fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
             Some(self.to_ref().cmp(&other.to_ref()))
@@ -208,6 +209,7 @@ impl<'a> RefSpecRef<'a> {
                     dst,
                     allow_non_fast_forward: matches!(self.mode, Mode::Force),
                 }),
+                (Mode::Negative, Some(src), None) => Instruction::Push(Push::Exclude { src }),
                 (mode, src, dest) => {
                     unreachable!(
                         "BUG: push instructions with {:?} {:?} {:?} are not possible",

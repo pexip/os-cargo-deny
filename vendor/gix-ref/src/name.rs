@@ -221,6 +221,7 @@ impl<'a> convert::TryFrom<&'a str> for PartialName {
     }
 }
 
+#[allow(clippy::infallible_try_from)]
 impl<'a> convert::TryFrom<&'a FullName> for &'a PartialNameRef {
     type Error = Infallible;
 
@@ -262,6 +263,18 @@ impl convert::TryFrom<BString> for PartialName {
     fn try_from(v: BString) -> Result<Self, Self::Error> {
         gix_validate::reference::name_partial(v.as_ref())?;
         Ok(PartialName(v))
+    }
+}
+
+impl std::fmt::Display for PartialName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl std::fmt::Display for PartialNameRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
     }
 }
 

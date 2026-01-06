@@ -1,11 +1,10 @@
 use std::{ffi::OsStr, io::ErrorKind};
 
 use bstr::{BString, ByteSlice, ByteVec};
-
 use gix_url::ArgumentSafety::*;
 
 use crate::{
-    client::{ssh, ssh::ProgramKind},
+    client::blocking_io::ssh::{self, ProgramKind},
     Protocol,
 };
 
@@ -29,7 +28,7 @@ impl ProgramKind {
         desired_version: Protocol,
         disallow_shell: bool,
     ) -> Result<gix_command::Prepare, ssh::invocation::Error> {
-        let mut prepare = gix_command::prepare(ssh_cmd).with_shell();
+        let mut prepare = gix_command::prepare(ssh_cmd).command_may_be_shell_script();
         if disallow_shell {
             prepare.use_shell = false;
         }
@@ -61,7 +60,7 @@ impl ProgramKind {
                     });
                 }
             }
-        };
+        }
 
         let host_maybe_with_user_as_ssh_arg = match (url.user_as_argument(), url.host_as_argument()) {
             (Usable(user), Usable(host)) => format!("{user}@{host}"),

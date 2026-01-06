@@ -3,7 +3,7 @@
 /// https://learn.microsoft.com/en-us/windows/win32/debug/pe-format#the-attribute-certificate-table-image-only
 /// https://learn.microsoft.com/en-us/windows/win32/api/wintrust/ns-wintrust-win_certificate
 use crate::error;
-use scroll::{ctx, Pread, Pwrite};
+use scroll::{Pread, Pwrite, ctx};
 
 use alloc::string::ToString;
 use alloc::vec::Vec;
@@ -34,7 +34,7 @@ impl TryFrom<u16> for AttributeCertificateRevision {
             _ => {
                 return Err(error::Error::Malformed(
                     "Invalid certificate attribute revision".to_string(),
-                ))
+                ));
             }
         })
     }
@@ -71,7 +71,7 @@ impl TryFrom<u16> for AttributeCertificateType {
             _ => {
                 return Err(error::Error::Malformed(
                     "Invalid attribute certificate type".to_string(),
-                ))
+                ));
             }
         })
     }
@@ -156,7 +156,7 @@ pub(crate) fn enumerate_certificates(
     bytes: &[u8],
     table_virtual_address: u32,
     table_size: u32,
-) -> Result<CertificateDirectoryTable, error::Error> {
+) -> Result<CertificateDirectoryTable<'_>, error::Error> {
     let table_start_offset = usize::try_from(table_virtual_address).map_err(|_err| {
         error::Error::Malformed("Certificate table RVA do not fit in a usize".to_string())
     })?;

@@ -260,7 +260,7 @@ impl File {
                 &first_entry,
                 consumed_input.expect("consumed bytes as set by cache"),
             ));
-        };
+        }
 
         // First pass will decompress all delta data and keep it in our output buffer
         // [<possibly resolved base object>]<delta-1..delta-n>...
@@ -374,7 +374,7 @@ impl File {
             if delta_idx + 1 == chain_len {
                 last_result_size = Some(result_size);
             }
-            delta::apply(&source_buf[..base_size], &mut target_buf[..result_size], data);
+            delta::apply(&source_buf[..base_size], &mut target_buf[..result_size], data)?;
             // use the target as source for the next delta
             std::mem::swap(&mut source_buf, &mut target_buf);
         }
@@ -419,8 +419,9 @@ impl File {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use gix_testtools::size_ok;
+
+    use super::*;
 
     #[test]
     fn size_of_decode_entry_outcome() {

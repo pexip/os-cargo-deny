@@ -1,7 +1,8 @@
+use std::path::PathBuf;
+
 use gix_dir::walk::{CollapsedEntriesEmissionMode, EmissionMode, ForDeletionMode};
 
 use crate::{config, AttributeStack, Pathspec};
-use std::path::PathBuf;
 
 mod options;
 
@@ -64,7 +65,7 @@ pub struct Outcome<'repo> {
     /// The pathspecs used to guide the operation,
     pub pathspec: Pathspec<'repo>,
     /// The root actually being used for the traversal, and useful to transform the paths returned for the user.
-    /// It's always within the [`work-dir`](crate::Repository::work_dir).
+    /// It's always within the [`work-dir`](crate::Repository::workdir).
     pub traversal_root: PathBuf,
     /// The actual result of the dirwalk.
     pub dirwalk: gix_dir::walk::Outcome,

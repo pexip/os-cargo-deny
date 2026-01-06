@@ -155,7 +155,8 @@ pub struct Platform<'repo> {
     /// The owning repository.
     pub repo: &'repo Repository,
     pub(crate) tips: Vec<ObjectId>,
-    pub(crate) prune: Vec<ObjectId>,
+    pub(crate) hidden: Vec<ObjectId>,
+    pub(crate) boundary: Vec<ObjectId>,
     pub(crate) sorting: Sorting,
     pub(crate) parents: gix_traverse::commit::Parents,
     pub(crate) use_commit_graph: Option<bool>,
@@ -167,11 +168,12 @@ impl<'repo> Platform<'repo> {
         revision::walk::Platform {
             repo,
             tips: tips.into_iter().map(Into::into).collect(),
+            hidden: Vec::new(),
             sorting: Default::default(),
             parents: Default::default(),
             use_commit_graph: None,
             commit_graph: None,
-            prune: Vec::new(),
+            boundary: Vec::new(),
         }
     }
 }
@@ -210,15 +212,16 @@ impl Platform<'_> {
         self
     }
 
-    /// Prune the commit with the given `ids` such that they won't be returned, and such that none of their ancestors is returned either.
+    /// Don't cross the given `ids` (commits) during traversal.
     ///
-    /// Note that this forces the [sorting](Self::sorting) to
-    /// [`ByCommitTimeCutoff`](Sorting::ByCommitTimeCutoff) configured with
-    /// the oldest available commit time, ensuring that no commits older than the oldest of `ids` will be returned either.
-    ///
+    /// Note that this forces the [sorting](Self::sorting()) to [`ByCommitTimeCutoff`](Sorting::ByCommitTimeCutoff)
+    /// configured with the oldest available commit time, ensuring that no commits older than the oldest of `ids` will be returned either.
     /// Also note that commits that can't be accessed or are missing are simply ignored for the purpose of obtaining the cutoff date.
-    #[doc(alias = "hide", alias = "git2")]
-    pub fn with_pruned(mut self, ids: impl IntoIterator<Item = impl Into<ObjectId>>) -> Self {
+    ///
+    /// A boundary is distinctly different from exclusive revspecs `^branch-to-not-list` in Git log.
+    ///
+    /// If this is not desired, [set the sorting](Self::sorting()) to something else right after this call.
+    pub fn with_boundary(mut self, ids: impl IntoIterator<Item = impl Into<ObjectId>>) -> Self {
         let (mut cutoff, order) = match self.sorting {
             Sorting::ByCommitTimeCutoff { seconds, order } => (Some(seconds), order),
             Sorting::ByCommitTime(order) => (None, order),
@@ -226,19 +229,33 @@ impl Platform<'_> {
         };
         for id in ids.into_iter() {
             let id = id.into();
-            if !self.prune.contains(&id) {
+            if !self.boundary.contains(&id) {
                 if let Some(time) = self.repo.find_commit(id).ok().and_then(|c| c.time().ok()) {
                     if cutoff.is_none() || cutoff > Some(time.seconds) {
                         cutoff = time.seconds.into();
                     }
                 }
-                self.prune.push(id);
+                self.boundary.push(id);
             }
         }
 
         if let Some(cutoff) = cutoff {
             self.sorting = Sorting::ByCommitTimeCutoff { seconds: cutoff, order }
         }
+        self
+    }
+
+    /// Don't cross the given `tips` (commits) during traversal or return them, and also don't return any of their ancestors.
+    ///
+    /// This allows achieving revspecs like `^branch-to-not-list`, where the commit behind that name would be passed as `ids`.
+    ///
+    /// In other words, each of the `tips` acts like a starting point for an iteration that will paint commits as unwanted, and
+    /// wanted commits cannot cross it.
+    ///
+    /// The side effect of this is that commits can't be returned immediately as one still has to wait and see if they may be unwanted later.
+    /// This makes traversals with hidden commits more costly, with a chance to traverse all commits if the hidden and non-hidden commits are disjoint.
+    pub fn with_hidden(mut self, tips: impl IntoIterator<Item = impl Into<ObjectId>>) -> Self {
+        self.hidden = tips.into_iter().map(Into::into).collect();
         self
     }
 }
@@ -260,9 +277,10 @@ impl<'repo> Platform<'repo> {
             parents,
             use_commit_graph,
             commit_graph,
-            mut prune,
+            mut boundary,
+            hidden,
         } = self;
-        prune.sort();
+        boundary.sort();
         Ok(revision::Walk {
             repo,
             inner: Box::new(
@@ -277,7 +295,7 @@ impl<'repo> Platform<'repo> {
                             return false;
                         }
                         let id = id.to_owned();
-                        if prune.binary_search(&id).is_ok() {
+                        if boundary.binary_search(&id).is_ok() {
                             return false;
                         }
                         match shallow_commits.as_ref() {
@@ -285,13 +303,13 @@ impl<'repo> Platform<'repo> {
                                 if let Ok(idx) = grafted_parents_to_skip.binary_search(&id) {
                                     grafted_parents_to_skip.remove(idx);
                                     return false;
-                                };
+                                }
                                 if commits.binary_search(&id).is_ok() {
                                     if let Ok(commit) = repo.objects.find_commit_iter(&id, &mut buf) {
                                         grafted_parents_to_skip.extend(commit.parent_ids());
                                         grafted_parents_to_skip.sort();
                                     }
-                                };
+                                }
                                 true
                             }
                             None => true,
@@ -300,6 +318,7 @@ impl<'repo> Platform<'repo> {
                 })
                 .sorting(sorting.into_simple().expect("for now there is nothing else"))?
                 .parents(parents)
+                .hide(hidden)?
                 .commit_graph(
                     commit_graph.or(use_commit_graph
                         .map_or_else(|| self.repo.config.may_use_commit_graph(), Ok)?

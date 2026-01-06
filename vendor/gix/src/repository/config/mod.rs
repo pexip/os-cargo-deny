@@ -12,8 +12,8 @@ impl crate::Repository {
     /// Return a mutable snapshot of the configuration as seen upon opening the repository, starting a transaction.
     /// When the returned instance is dropped, it is applied in full, even if the reason for the drop is an error.
     ///
-    /// Note that changes to the configuration are in-memory only and are observed only the this instance
-    /// of the [`Repository`][crate::Repository].
+    /// Note that changes to the configuration are in-memory only and are observed only this instance
+    /// of the [`Repository`](crate::Repository).
     pub fn config_snapshot_mut(&mut self) -> config::SnapshotMut<'_> {
         let config = self.config.resolved.as_ref().clone();
         config::SnapshotMut {
@@ -42,11 +42,27 @@ impl crate::Repository {
         &self.options
     }
 
+    /// Return the big-file threshold above which Git will not perform a diff anymore or try to delta-diff packs,
+    /// as configured by `core.bigFileThreshold`, or the default value.
+    pub fn big_file_threshold(&self) -> Result<u64, config::unsigned_integer::Error> {
+        self.config.big_file_threshold()
+    }
+
+    /// Create a low-level parser for ignore patterns, for instance for use in [`excludes()`](crate::Repository::excludes()).
+    ///
+    /// Depending on the configuration, precious-file parsing in `.gitignore-files` is supported.
+    /// This means that `$` prefixed files will be interpreted as precious, which is a backwards-incompatible change.
+    #[cfg(feature = "excludes")]
+    pub fn ignore_pattern_parser(&self) -> Result<gix_ignore::search::Ignore, config::boolean::Error> {
+        self.config.ignore_pattern_parser()
+    }
+
     /// Obtain options for use when connecting via `ssh`.
     #[cfg(feature = "blocking-network-client")]
     pub fn ssh_connect_options(
         &self,
-    ) -> Result<gix_protocol::transport::client::ssh::connect::Options, config::ssh_connect_options::Error> {
+    ) -> Result<gix_protocol::transport::client::blocking_io::ssh::connect::Options, config::ssh_connect_options::Error>
+    {
         use crate::config::{
             cache::util::ApplyLeniency,
             tree::{gitoxide, Core, Ssh},
@@ -62,7 +78,7 @@ impl crate::Repository {
                 config.string_filter(gitoxide::Ssh::COMMAND_WITHOUT_SHELL_FALLBACK, &mut trusted)
             })
             .map(|cmd| gix_path::from_bstr(cmd).into_owned().into());
-        let opts = gix_protocol::transport::client::ssh::connect::Options {
+        let opts = gix_protocol::transport::client::blocking_io::ssh::connect::Options {
             disallow_shell: fallback_active,
             command: ssh_command,
             kind: config
@@ -101,7 +117,7 @@ impl crate::Repository {
                     .into()
             },
             git_dir: self.git_dir().to_owned().into(),
-            worktree_dir: self.work_dir().map(ToOwned::to_owned),
+            worktree_dir: self.workdir().map(ToOwned::to_owned),
             no_replace_objects: config::shared::is_replace_refs_enabled(
                 &self.config.resolved,
                 self.config.lenient_config,

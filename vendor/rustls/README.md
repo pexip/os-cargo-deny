@@ -55,10 +55,10 @@ can replace all cryptography dependencies of rustls.  This is a route to being p
 to a wider set of architectures and environments, or compliance requirements.  See the
 [`crypto::CryptoProvider`] documentation for more details.
 
-Specifying `default-features = false` when depending on rustls will remove the
+Specifying `default-features = false` when depending on rustls will remove the implicit
 dependency on aws-lc-rs.
 
-Rustls requires Rust 1.63 or later. It has an optional dependency on zlib-rs which requires 1.75 or later.
+Rustls requires Rust 1.71 or later. It has an optional dependency on zlib-rs which requires 1.75 or later.
 
 [ring-target-platforms]: https://github.com/briansmith/ring/blob/2e8363b433fa3b3962c877d9ed2e9145612f3160/include/ring-core/target.h#L18-L64
 [`crypto::CryptoProvider`]: https://docs.rs/rustls/latest/rustls/crypto/struct.CryptoProvider.html
@@ -90,15 +90,18 @@ selected.
 
 The community has also started developing third-party providers for Rustls:
 
-* [`rustls-mbedtls-provider`] - a provider that uses [`mbedtls`] for cryptography.
-* [`rustls-openssl`] - a provider that uses [OpenSSL] for cryptography.
 * [`boring-rustls-provider`] - a work-in-progress provider that uses [`boringssl`] for
 cryptography.
+* [`rustls-graviola`] - a provider that uses [`graviola`] for cryptography.
+* [`rustls-mbedtls-provider`] - a provider that uses [`mbedtls`] for cryptography.
+* [`rustls-openssl`] - a provider that uses [OpenSSL] for cryptography.
 * [`rustls-rustcrypto`] - an experimental provider that uses the crypto primitives
 from [`RustCrypto`] for cryptography.
 * [`rustls-symcrypt`] - a provider that uses Microsoft's [SymCrypt] library.
 * [`rustls-wolfcrypt-provider`] - a work-in-progress provider that uses [`wolfCrypt`] for cryptography.
 
+[`rustls-graviola`]: https://crates.io/crates/rustls-graviola
+[`graviola`]: https://github.com/ctz/graviola
 [`rustls-mbedtls-provider`]: https://github.com/fortanix/rustls-mbedtls-provider
 [`mbedtls`]: https://github.com/Mbed-TLS/mbedtls
 [`rustls-openssl`]: https://github.com/tofay/rustls-openssl
@@ -114,14 +117,13 @@ from [`RustCrypto`] for cryptography.
 
 #### Custom provider
 
-We also provide a simple example of writing your own provider in the [`custom-provider`]
-example. This example implements a minimal provider using parts of the [`RustCrypto`]
-ecosystem.
+We also provide a simple example of writing your own provider in the [custom provider example].
+This example implements a minimal provider using parts of the [`RustCrypto`] ecosystem.
 
 See the [Making a custom CryptoProvider] section of the documentation for more information
 on this topic.
 
-[`custom-provider`]: https://github.com/rustls/rustls/tree/main/provider-example/
+[custom provider example]: https://github.com/rustls/rustls/tree/main/provider-example/
 [`RustCrypto`]: https://github.com/RustCrypto
 [Making a custom CryptoProvider]: https://docs.rs/rustls/latest/rustls/crypto/struct.CryptoProvider.html#making-a-custom-cryptoprovider
 

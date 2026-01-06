@@ -1,5 +1,7 @@
 use serde::de::value::Error as ValueError;
 use serde::Serialize;
+#[cfg(feature = "ron")]
+use std::borrow::Cow;
 
 use crate::content::{json, yaml, Content, ContentSerializer};
 use crate::settings::Settings;
@@ -29,9 +31,7 @@ pub fn serialize_content(mut content: Content, format: SerializationFormat) -> S
         }
         #[cfg(feature = "redactions")]
         {
-            for (selector, redaction) in settings.iter_redactions() {
-                content = selector.redact(content, redaction);
-            }
+            content = settings.apply_redactions(content);
         }
         content
     });
@@ -63,19 +63,19 @@ pub fn serialize_content(mut content: Content, format: SerializationFormat) -> S
         }
         #[cfg(feature = "ron")]
         SerializationFormat::Ron => {
-            let mut buf = Vec::new();
+            let mut buf = String::new();
             let mut config = ron::ser::PrettyConfig::new();
-            config.new_line = "\n".to_string();
-            config.indentor = "  ".to_string();
+            config.new_line = Cow::Borrowed("\n");
+            config.indentor = Cow::Borrowed("  ");
             config.struct_names = true;
             let mut serializer = ron::ser::Serializer::with_options(
                 &mut buf,
                 Some(config),
-                ron::options::Options::default(),
+                &ron::options::Options::default(),
             )
             .unwrap();
             content.serialize(&mut serializer).unwrap();
-            String::from_utf8(buf).unwrap()
+            buf
         }
         #[cfg(feature = "toml")]
         SerializationFormat::Toml => {
@@ -126,14 +126,14 @@ fn test_yaml_serialization() {
         ]),
         SerializationFormat::Yaml,
     );
-    crate::assert_snapshot!(&yaml, @r###"
+    crate::assert_snapshot!(&yaml, @r"
     env:
       - ENVIRONMENT
       - production
     cmdline:
       - my-tool
       - run
-    "###);
+    ");
 
     let inline_yaml = serialize_content(
         Content::Map(vec![
@@ -151,12 +151,12 @@ fn test_yaml_serialization() {
         ]),
         SerializationFormat::Yaml,
     );
-    crate::assert_snapshot!(&inline_yaml, @r###"
+    crate::assert_snapshot!(&inline_yaml, @r"
     env:
       - ENVIRONMENT
       - production
     cmdline:
       - my-tool
       - run
-    "###);
+    ");
 }

@@ -1,6 +1,8 @@
-use crate::bstr::BString;
-use crate::bstr::ByteSlice;
-use crate::clone::PrepareFetch;
+use crate::{
+    bstr::{BString, ByteSlice},
+    clone::PrepareFetch,
+};
+use gix_ref::Category;
 
 /// The error returned by [`PrepareFetch::fetch_only()`].
 #[derive(Debug, thiserror::Error)]
@@ -44,6 +46,12 @@ pub enum Error {
         wanted: gix_ref::PartialName,
         candidates: Vec<BString>,
     },
+    #[error(transparent)]
+    CommitterOrFallback(#[from] crate::config::time::Error),
+    #[error(transparent)]
+    RefMap(#[from] crate::remote::ref_map::Error),
+    #[error(transparent)]
+    ReferenceName(#[from] gix_validate::reference::name::Error),
 }
 
 /// Modification
@@ -79,10 +87,11 @@ impl PrepareFetch {
             .as_mut()
             .expect("user error: multiple calls are allowed only until it succeeds");
 
+        repo.committer_or_set_generic_fallback()?;
+
         if !self.config_overrides.is_empty() {
             let mut snapshot = repo.config_snapshot_mut();
             snapshot.append_config(&self.config_overrides, gix_config::Source::Api)?;
-            snapshot.commit()?;
         }
 
         let remote_name = match self.remote_name.as_ref() {
@@ -97,14 +106,81 @@ impl PrepareFetch {
         };
 
         let mut remote = repo.remote_at(self.url.clone())?;
+
+        // For shallow clones without custom configuration, we'll use a single-branch refspec
+        // to match git's behavior (matching git's single-branch behavior for shallow clones).
+        let use_single_branch_for_shallow = self.shallow != remote::fetch::Shallow::NoChange
+            && remote.fetch_specs.is_empty()
+            && self.fetch_options.extra_refspecs.is_empty();
+
+        let target_ref = if use_single_branch_for_shallow {
+            // Determine target branch from user-specified ref_name or default branch
+            if let Some(ref_name) = &self.ref_name {
+                Some(Category::LocalBranch.to_full_name(ref_name.as_ref().as_bstr())?)
+            } else {
+                // For shallow clones without a specified ref, we need to determine the default branch.
+                // We'll connect to get HEAD information. For Protocol V2, we need to explicitly list refs.
+                let mut connection = remote.connect(remote::Direction::Fetch).await?;
+
+                // Perform handshake and try to get HEAD from it (works for Protocol V1)
+                let _ = connection.ref_map_by_ref(&mut progress, Default::default()).await?;
+
+                let target = if let Some(handshake) = &connection.handshake {
+                    // Protocol V1: refs are in handshake
+                    handshake.refs.as_ref().and_then(|refs| {
+                        refs.iter().find_map(|r| match r {
+                            gix_protocol::handshake::Ref::Symbolic {
+                                full_ref_name, target, ..
+                            } if full_ref_name == "HEAD" => gix_ref::FullName::try_from(target).ok(),
+                            _ => None,
+                        })
+                    })
+                } else {
+                    None
+                };
+
+                // For Protocol V2 or if we couldn't determine HEAD, use the configured default branch
+                let fallback_branch = target
+                    .or_else(|| {
+                        repo.config
+                            .resolved
+                            .string(crate::config::tree::Init::DEFAULT_BRANCH)
+                            .and_then(|name| Category::LocalBranch.to_full_name(name.as_bstr()).ok())
+                    })
+                    .unwrap_or_else(|| gix_ref::FullName::try_from("refs/heads/main").expect("known to be valid"));
+
+                // Drop the connection explicitly to release the borrow on remote
+                drop(connection);
+
+                Some(fallback_branch)
+            }
+        } else {
+            None
+        };
+
+        // Set up refspec based on whether we're doing a single-branch shallow clone,
+        // which requires a single ref to match Git unless it's overridden.
         if remote.fetch_specs.is_empty() {
-            remote = remote
-                .with_refspecs(
-                    Some(format!("+refs/heads/*:refs/remotes/{remote_name}/*").as_str()),
-                    remote::Direction::Fetch,
-                )
-                .expect("valid static spec");
+            if let Some(target_ref) = &target_ref {
+                // Single-branch refspec for shallow clones
+                let short_name = target_ref.shorten();
+                remote = remote
+                    .with_refspecs(
+                        Some(format!("+{target_ref}:refs/remotes/{remote_name}/{short_name}").as_str()),
+                        remote::Direction::Fetch,
+                    )
+                    .expect("valid refspec");
+            } else {
+                // Wildcard refspec for non-shallow clones or when target couldn't be determined
+                remote = remote
+                    .with_refspecs(
+                        Some(format!("+refs/heads/*:refs/remotes/{remote_name}/*").as_str()),
+                        remote::Direction::Fetch,
+                    )
+                    .expect("valid static spec");
+            }
         }
+
         let mut clone_fetch_tags = None;
         if let Some(f) = self.configure_remote.as_mut() {
             remote = f(remote).map_err(Error::RemoteConfiguration)?;
@@ -129,6 +205,7 @@ impl PrepareFetch {
         .expect("valid")
         .to_owned();
         let pending_pack: remote::fetch::Prepare<'_, '_, _> = {
+            // For shallow clones, we already connected once, so we need to connect again
             let mut connection = remote.connect(remote::Direction::Fetch).await?;
             if let Some(f) = self.configure_connection.as_mut() {
                 f(&mut connection).map_err(Error::RemoteConnection)?;
