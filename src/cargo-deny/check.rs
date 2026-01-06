@@ -2,6 +2,7 @@ use crate::{
     common::ValidConfig,
     stats::{AllStats, Stats},
 };
+use anyhow::Context;
 use cargo_deny::{
     CheckCtx, PathBuf, advisories, bans,
     diag::{DiagnosticCode, DiagnosticOverrides, ErrorSink, Files, Severity},
@@ -77,6 +78,15 @@ pub struct Args {
     /// Defaults to <cwd>/deny.toml if not specified
     #[arg(short, long)]
     pub config: Option<PathBuf>,
+
+    /// Path to cargo metadata json
+    ///
+    /// By default we use `cargo metadata` to generate
+    /// the metadata json, but you can override that behaviour by
+    /// providing the path to cargo metadata.
+    #[arg(long)]
+    pub metadata_path: Option<PathBuf>,
+
     /// Path to graph output root directory
     ///
     /// If set, a dotviz graph will be created for whenever multiple versions of the same crate are detected.
@@ -132,6 +142,13 @@ pub(crate) fn cmd(
         &mut files,
         log_ctx,
     )?;
+
+    let metadata = if let Some(metadata_path) = args.metadata_path {
+        let data = std::fs::read_to_string(metadata_path).context("metadata path")?;
+        Some(serde_json::from_str(&data).context("cargo metadata")?)
+    } else {
+        None
+    };
 
     let check_advisories = args.which.is_empty()
         || args
@@ -237,7 +254,7 @@ pub(crate) fn cmd(
                 log::info!("fetched crates in {:?}", start.elapsed());
             }
 
-            krates = Some(krate_ctx.gather_krates(graph.targets, graph.exclude));
+            krates = Some(krate_ctx.gather_krates(metadata, graph.targets, graph.exclude));
         });
 
         if check_advisories {
@@ -317,7 +334,7 @@ pub(crate) fn cmd(
 
     let show_inclusion_graphs = !args.hide_inclusion_graph;
     let serialize_extra = match log_ctx.format {
-        crate::Format::Json => true,
+        crate::Format::Json | crate::Format::Sarif => true,
         crate::Format::Human => false,
     };
     let audit_compatible_output =
@@ -530,28 +547,45 @@ fn print_diagnostics(
 ) {
     use cargo_deny::diag::Check;
 
-    let dp = crate::common::DiagPrinter::new(log_ctx, krates, feature_depth);
+    if log_ctx.format == crate::Format::Sarif {
+        let mut sc = cargo_deny::sarif::SarifCollector::default();
 
-    for pack in rx {
-        let check_stats = match pack.check {
-            Check::Advisories => stats.advisories.as_mut().unwrap(),
-            Check::Bans => stats.bans.as_mut().unwrap(),
-            Check::Licenses => stats.licenses.as_mut().unwrap(),
-            Check::Sources => stats.sources.as_mut().unwrap(),
-        };
+        for pack in rx {
+            sc.add_diagnostics(pack, files);
+        }
 
-        for diag in pack.iter() {
-            match diag.diag.severity {
-                Severity::Error => check_stats.errors += 1,
-                Severity::Warning => check_stats.warnings += 1,
-                Severity::Note => check_stats.notes += 1,
-                Severity::Help => check_stats.helps += 1,
-                Severity::Bug => {}
+        let sarif = sc.generate_sarif();
+        let json = serde_json::to_string_pretty(&sarif).unwrap();
+        // Output to stdout for SARIF format
+        use std::io::Write;
+        {
+            let mut lock = std::io::stdout();
+            let _ = lock.write_all(json.as_bytes());
+            let _ = lock.write_all(b"\n");
+        }
+    } else {
+        let dp = crate::common::DiagPrinter::new(log_ctx, krates, feature_depth);
+        for pack in rx {
+            let check_stats = match pack.check {
+                Check::Advisories => stats.advisories.as_mut().unwrap(),
+                Check::Bans => stats.bans.as_mut().unwrap(),
+                Check::Licenses => stats.licenses.as_mut().unwrap(),
+                Check::Sources => stats.sources.as_mut().unwrap(),
+            };
+
+            for diag in pack.iter() {
+                match diag.diag.severity {
+                    Severity::Error => check_stats.errors += 1,
+                    Severity::Warning => check_stats.warnings += 1,
+                    Severity::Note => check_stats.notes += 1,
+                    Severity::Help => check_stats.helps += 1,
+                    Severity::Bug => {}
+                }
+            }
+
+            if let Some(mut lock) = dp.as_ref().map(|dp| dp.lock()) {
+                lock.print_krate_pack(pack, files);
             }
         }
-
-        if let Some(mut lock) = dp.as_ref().map(|dp| dp.lock()) {
-            lock.print_krate_pack(pack, files);
-        }
-    }
+    };
 }

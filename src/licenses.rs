@@ -31,11 +31,12 @@ struct Hits {
 
 fn evaluate_expression(
     ctx: &crate::CheckCtx<'_, cfg::ValidConfig>,
-    krate_lic_nfo: &KrateLicense<'_>,
+    krate: &crate::Krate,
+    mut notes: Vec<String>,
     expr: &spdx::Expression,
     nfo: &LicenseExprInfo,
     hits: &mut Hits,
-) -> Diagnostic {
+) -> crate::diag::Diag {
     // TODO: If an expression with the same hash is encountered
     // just use the same result as a memoized one
     #[derive(Debug)]
@@ -68,7 +69,7 @@ fn evaluate_expression(
     let exception_ind = cfg
         .exceptions
         .iter()
-        .position(|exc| crate::match_krate(krate_lic_nfo.krate, &exc.spec));
+        .position(|exc| crate::match_krate(krate, &exc.spec));
 
     let eval_res = expr.evaluate_with_failures(|req| {
         // 1. Exceptions are additional per-crate licenses that aren't blanket
@@ -103,23 +104,47 @@ fn evaluate_expression(
     };
 
     let mut labels = Vec::with_capacity(reasons.len() + 1);
-    labels.extend(krate_lic_nfo.labels.clone());
 
-    labels.push(
-        Label::secondary(nfo.file_id, nfo.offset..nfo.offset + expr.as_ref().len()).with_message(
-            format!(
-                "license expression retrieved via {}",
-                match &nfo.source {
-                    LicenseExprSource::Metadata => "Cargo.toml `license`".to_owned(),
-                    LicenseExprSource::UserOverride => "user override".to_owned(),
-                    LicenseExprSource::LicenseFiles(lfs) => lfs.join(", "),
-                    LicenseExprSource::OverlayOverride => unreachable!(),
-                }
-            ),
+    let (lab, original_loc) = match &nfo.source {
+        LicenseExprSource::Metadata(location) => {
+            let lab = if let Some(loc) = location {
+                Label::secondary(loc.0, loc.1.clone())
+            } else {
+                Label::secondary(nfo.file_id, nfo.offset..nfo.offset + expr.as_ref().len())
+            };
+
+            (lab, location.clone())
+        }
+        LicenseExprSource::UserOverride => (
+            Label::secondary(nfo.file_id, nfo.offset..nfo.offset + expr.as_ref().len())
+                .with_message("license expression retrieved via user override"),
+            None,
         ),
-    );
+        LicenseExprSource::LicenseFiles(lfs) => {
+            let mut s = "license expression retrieved via license files: ".to_owned();
 
-    let mut notes = krate_lic_nfo.notes.clone();
+            for (i, lf) in lfs.iter().enumerate() {
+                if i != 0 {
+                    if lfs.len() == 2 {
+                        s.push_str(" and ");
+                    } else if lfs.len() > 2 && i == lfs.len() - 1 {
+                        s.push_str(", and ");
+                    } else {
+                        s.push_str(", ");
+                    }
+                }
+
+                s.push_str(lf);
+            }
+            (
+                Label::secondary(nfo.file_id, nfo.offset..nfo.offset + expr.as_ref().len())
+                    .with_message(s),
+                None,
+            )
+        }
+        LicenseExprSource::OverlayOverride => unreachable!(),
+    };
+    labels.push(lab);
 
     for ((reason, accepted), failed_req) in reasons.into_iter().zip(expr.requirements()) {
         if accepted && ctx.log_level < log::LevelFilter::Info {
@@ -152,19 +177,36 @@ fn evaluate_expression(
                     notes.push("  - No additional metadata available for license".into());
                 }
             } else {
-                // This would only happen if askalono used a newer license list than spdx, but we update
-                // both simultaneously
+                // This would only happen if askalono used a newer license list
+                // than spdx, but we update both simultaneously
                 notes.push(format!("{} is not an SPDX license", failed_req.req));
             }
         }
 
+        let (id, offset) = if let Some((file_id, range)) = &original_loc {
+            (*file_id, range.start)
+        } else {
+            (nfo.file_id, nfo.offset)
+        };
+
+        let start = offset + failed_req.span.start as usize;
+
+        // TODO: fix this in spdx, but we only get the span for the license, not the exception
+        let end = if let Some(ai) = &failed_req.req.addition {
+            failed_req.span.end as usize + 6 /*" WITH "*/ + match ai {
+                spdx::AdditionItem::Spdx(exc) => exc.name.len(),
+                spdx::AdditionItem::Other(other) => {
+                    /*AdditionRef-*/ 12 + other.add_ref.len() + other.doc_ref.as_deref().map_or(0, |dr| {
+                        /*DocumentRef-:*/ 13 + dr.len()
+                    })
+                }
+            }
+        } else {
+            failed_req.span.end as usize
+        };
+
         labels.push(
-            Label::primary(
-                nfo.file_id,
-                nfo.offset + failed_req.span.start as usize
-                    ..nfo.offset + failed_req.span.end as usize,
-            )
-            .with_message(format!(
+            Label::primary(id, start..offset + end).with_message(format_args!(
                 "{}: {}",
                 if accepted { "accepted" } else { "rejected" },
                 match reason {
@@ -176,15 +218,19 @@ fn evaluate_expression(
         );
     }
 
-    Diagnostic::new(severity)
-        .with_message(message)
-        .with_code(if severity != Severity::Error {
-            diags::Code::Accepted
-        } else {
-            diags::Code::Rejected
-        })
-        .with_labels(labels)
-        .with_notes(notes)
+    crate::diag::Diag::new(
+        Diagnostic::new(severity)
+            .with_message(message)
+            .with_labels(labels)
+            .with_notes(notes),
+        Some(crate::diag::DiagnosticCode::License(
+            if severity != Severity::Error {
+                diags::Code::Accepted
+            } else {
+                diags::Code::Rejected
+            },
+        )),
+    )
 }
 
 pub fn check(
@@ -208,9 +254,9 @@ pub fn check(
     for krate_lic_nfo in summary.nfos {
         let mut pack = Pack::with_kid(Check::Licenses, krate_lic_nfo.krate.id.clone());
 
-        // If the user has set this, check if it's a private workspace
-        // crate or a crate from a private registry and just print out
-        // a help message that we skipped it
+        // If the user has set this, check if it's a private workspace crate or
+        // a crate from a private registry and just print out a help message
+        // that we skipped it
         if ctx.cfg.private.ignore
             && (krate_lic_nfo.krate.is_private(&private_registries)
                 || ctx
@@ -226,21 +272,27 @@ pub fn check(
             continue;
         }
 
-        match &krate_lic_nfo.lic_info {
+        let KrateLicense {
+            krate,
+            lic_info,
+            notes,
+            diags,
+        } = krate_lic_nfo;
+
+        for diag in diags {
+            pack.push(diag);
+        }
+
+        match lic_info {
             LicenseInfo::SpdxExpression { expr, nfo } => {
                 pack.push(evaluate_expression(
-                    &ctx,
-                    &krate_lic_nfo,
-                    expr,
-                    nfo,
-                    &mut hits,
+                    &ctx, krate, notes, &expr, &nfo, &mut hits,
                 ));
             }
             LicenseInfo::Unlicensed => {
                 pack.push(diags::Unlicensed {
-                    krate: krate_lic_nfo.krate,
+                    krate,
                     severity: Severity::Error,
-                    breadcrumbs: krate_lic_nfo.labels.into_iter().collect(),
                 });
             }
         }
@@ -252,6 +304,8 @@ pub fn check(
 
     {
         let mut pack = Pack::new(Check::Licenses);
+
+        let severity = ctx.cfg.unused_license_exception.into();
 
         // Print out warnings for exceptions that pertain to crates that
         // weren't actually encountered
@@ -267,6 +321,7 @@ pub fn check(
             }
 
             pack.push(diags::UnmatchedLicenseException {
+                severity,
                 license_exc_cfg: CfgCoord {
                     file: exc.file_id,
                     span: exc.spec.name.span,

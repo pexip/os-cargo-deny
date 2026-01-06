@@ -1,13 +1,12 @@
 use super::cfg::{FileSource, ValidClarification, ValidConfig};
 use crate::{
     Krate, Path, PathBuf,
-    diag::{FileId, Files, Label},
+    diag::{Diag, Diagnostic, FileId, Files, Label},
+    licenses::diags,
 };
 use rayon::prelude::*;
 use smallvec::SmallVec;
 use std::{fmt, sync::Arc};
-
-const LICENSE_CACHE: &[u8] = include_bytes!("../../resources/spdx_cache.bin.zstd");
 
 #[inline]
 fn iter_clarifications<'a>(
@@ -151,10 +150,10 @@ impl LicensePack {
 
         // Add the explicitly specified license if it wasn't
         // already found in the root directory
-        if let Some(lf) = &krate.license_file {
-            if !lic_paths.iter().any(|l| l.ends_with(lf)) {
-                lic_paths.push(lf.clone());
-            }
+        if let Some(lf) = &krate.license_file
+            && !lic_paths.iter().any(|l| l.ends_with(lf))
+        {
+            lic_paths.push(lf.clone());
         }
 
         let mut license_files: Vec<_> = lic_paths
@@ -200,7 +199,7 @@ impl LicensePack {
     fn get_expression(
         &self,
         file: FileId,
-        strategy: &askalono::ScanStrategy<'_>,
+        scanner: &spdx::detection::scan::Scanner<'_>,
         confidence: f32,
     ) -> Result<GatheredExpr, (String, Vec<Label>)> {
         use std::fmt::Write;
@@ -237,88 +236,81 @@ impl LicensePack {
                 PackFileData::Good(data) => {
                     write!(synth_toml, "hash = 0x{:08x}, ", data.hash).unwrap();
 
-                    let text = askalono::TextData::new(&data.content);
-                    match strategy.scan(&text) {
-                        Ok(lic_match) => {
-                            if let Some(mut identified) = lic_match.license {
-                                // See https://github.com/EmbarkStudios/cargo-deny/issues/625
-                                // but the Pixar license is just a _slightly_ modified Apache-2.0 license, and since
-                                // the apache 2.0 license is so common, and the modification of removing the appendix,
-                                // which causes askalono to think it is pixar instead is probably common enough we need
-                                // to just explicitly handle it. Really this should be fixed in askalono but that library
-                                // is basically abandoned at this point and should be replaced https://github.com/EmbarkStudios/spdx/issues/67
-                                if identified.name == "Pixar" {
-                                    // Very loose, but just check if the title is actually for the pixar license or not
-                                    if !data
-                                        .content
-                                        .trim_start()
-                                        .starts_with("Modified Apache 2.0 License")
-                                    {
-                                        // emit a note about this, just in case
-                                        notes.push(format!("'{}' fuzzy matched to Pixar license, but it actually a normal Apache-2.0 license", lic_contents.path));
+                    let text = spdx::detection::TextData::new(&data.content);
+                    let lic_match = scanner.scan(&text);
+                    if let Some(mut identified) = lic_match.license {
+                        // See https://github.com/EmbarkStudios/cargo-deny/issues/625
+                        // but the Pixar license is just a _slightly_ modified Apache-2.0 license, and since
+                        // the apache 2.0 license is so common, and the modification of removing the appendix,
+                        // which causes askalono to think it is pixar instead is probably common enough we need
+                        // to just explicitly handle it. Really this should be fixed in askalono but that library
+                        // is basically abandoned at this point and should be replaced https://github.com/EmbarkStudios/spdx/issues/67
+                        if identified.name == "Pixar" {
+                            // Very loose, but just check if the title is actually for the pixar license or not
+                            if !data
+                                .content
+                                .trim_start()
+                                .starts_with("Modified Apache 2.0 License")
+                            {
+                                // emit a note about this, just in case
+                                notes.push(format!("'{}' fuzzy matched to Pixar license, but it is actually a normal Apache-2.0 license", lic_contents.path));
 
-                                        identified.name = "Apache-2.0";
-                                    }
+                                identified.name = "Apache-2.0";
+                            }
+                        }
+
+                        // askalano doesn't report any matches below the confidence threshold
+                        // but we want to see what it thinks the license is if the confidence
+                        // is somewhat ok at least
+                        if lic_match.score >= confidence {
+                            if let Some(id) = spdx::license_id(identified.name) {
+                                if !sources.is_empty() {
+                                    expr.push_str(" AND ");
                                 }
 
-                                // askalano doesn't report any matches below the confidence threshold
-                                // but we want to see what it thinks the license is if the confidence
-                                // is somewhat ok at least
-                                if lic_match.score >= confidence {
-                                    if let Some(id) = spdx::license_id(identified.name) {
-                                        if !sources.is_empty() {
-                                            expr.push_str(" AND ");
-                                        }
-
-                                        expr.push_str(id.name);
-                                        sources.push(lic_contents.path.as_str().to_owned());
-                                    } else {
-                                        write!(synth_toml, "score = {:.2}", lic_match.score)
-                                            .unwrap();
-                                        let start = synth_toml.len();
-                                        write!(synth_toml, ", license = \"{}\"", identified.name)
-                                            .unwrap();
-                                        let end = synth_toml.len();
-
-                                        failures.push(
-                                            Label::secondary(file, start + 13..end - 1)
-                                                .with_message("unknown SPDX identifier"),
-                                        );
-                                    }
-                                } else {
-                                    let start = synth_toml.len();
-                                    write!(synth_toml, "score = {:.2}", lic_match.score).unwrap();
-                                    let end = synth_toml.len();
-                                    write!(synth_toml, ", license = \"{}\"", identified.name)
-                                        .unwrap();
-
-                                    failures.push(
-                                        Label::secondary(file, start + 8..end)
-                                            .with_message("low confidence in the license text"),
-                                    );
+                                if id.is_deprecated() {
+                                    notes.push(format!("license '{}' detected in '{}' is deprecated in SPDX license list {}", id.name, lic_contents.path, spdx::identifiers::VERSION));
                                 }
+
+                                expr.push_str(id.name);
+                                sources.push(lic_contents.path.as_str().to_owned());
                             } else {
-                                // If the license can't be matched with high enough confidence
-                                let start = synth_toml.len();
                                 write!(synth_toml, "score = {:.2}", lic_match.score).unwrap();
+                                let start = synth_toml.len();
+                                write!(synth_toml, ", license = \"{}\"", identified.name).unwrap();
                                 let end = synth_toml.len();
 
                                 failures.push(
-                                    Label::secondary(file, start + 8..end)
-                                        .with_message("low confidence in the license text"),
+                                    Label::secondary(file, start + 13..end - 1)
+                                        .with_message("unknown SPDX identifier"),
                                 );
                             }
-                        }
-                        Err(err) => {
-                            panic!(
-                                "askalono's elimination strategy failed (this used to be impossible): {err}"
+                        } else {
+                            let start = synth_toml.len();
+                            write!(synth_toml, "score = {:.2}", lic_match.score).unwrap();
+                            let end = synth_toml.len();
+                            write!(synth_toml, ", license = \"{}\"", identified.name).unwrap();
+
+                            failures.push(
+                                Label::secondary(file, start + 8..end)
+                                    .with_message("low confidence in the license text"),
                             );
                         }
+                    } else {
+                        // If the license can't be matched with high enough confidence
+                        let start = synth_toml.len();
+                        write!(synth_toml, "score = {:.2}", lic_match.score).unwrap();
+                        let end = synth_toml.len();
+
+                        failures.push(
+                            Label::secondary(file, start + 8..end)
+                                .with_message("low confidence in the license text"),
+                        );
                     }
                 }
                 PackFileData::Bad(err) => {
                     let start = synth_toml.len();
-                    write!(synth_toml, "err = \"{}\"", err).unwrap();
+                    write!(synth_toml, "err = \"{err}\"").unwrap();
                     let end = synth_toml.len();
 
                     failures.push(
@@ -338,7 +330,20 @@ impl LicensePack {
                 synthesized_toml: synth_toml,
                 failures,
                 notes,
-                expr: spdx::Expression::parse(&expr).unwrap(),
+                expr: spdx::Expression::parse_mode(
+                    &expr,
+                    spdx::ParseMode {
+                        // We need to allow deprecated licenses because of reality
+                        allow_deprecated: true,
+                        // This should be impossible as we identify only valid licenses
+                        allow_imprecise_license_names: false,
+                        // Impossible
+                        allow_postfix_plus_on_gpl: false,
+                        allow_slash_as_or_operator: false,
+                        allow_unknown: false,
+                    },
+                )
+                .unwrap(),
                 file_sources: sources,
             })
         } else {
@@ -357,7 +362,7 @@ pub struct LicenseExprInfo {
 #[derive(Debug, PartialEq, Eq)]
 pub enum LicenseExprSource {
     /// An SPDX expression in the Cargo.toml `license` field
-    Metadata,
+    Metadata(Option<(FileId, std::ops::Range<usize>)>),
     /// An override in the user's deny.toml
     UserOverride,
     /// An override from an overlay
@@ -379,7 +384,6 @@ pub enum LicenseInfo {
     Unlicensed,
 }
 
-#[derive(Debug)]
 pub struct KrateLicense<'a> {
     pub krate: &'a Krate,
     pub lic_info: LicenseInfo,
@@ -388,7 +392,7 @@ pub struct KrateLicense<'a> {
 
     // Reasons for why the license was determined (or not!) when
     // gathering the license information
-    pub(crate) labels: SmallVec<[Label; 1]>,
+    pub(crate) diags: SmallVec<[Diag; 1]>,
 }
 
 pub struct Summary<'a> {
@@ -407,14 +411,14 @@ impl Summary<'_> {
 
 /// Store used to identify licenses from text files
 pub struct LicenseStore {
-    store: askalono::Store,
+    store: spdx::detection::Store,
 }
 
 impl LicenseStore {
     pub fn from_cache() -> anyhow::Result<Self> {
         use anyhow::Context as _;
         let store =
-            askalono::Store::from_cache(LICENSE_CACHE).context("failed to load license store")?;
+            spdx::detection::Store::load_inline().context("failed to load license store")?;
 
         Ok(Self { store })
     }
@@ -423,10 +427,12 @@ impl LicenseStore {
 impl Default for LicenseStore {
     fn default() -> Self {
         Self {
-            store: askalono::Store::new(),
+            store: spdx::detection::Store::new(),
         }
     }
 }
+
+const LICENSE_RX: &str = r#"license\s*=\s*["']([^"']*)["']"#;
 
 pub struct Gatherer {
     store: Arc<LicenseStore>,
@@ -482,8 +488,7 @@ impl Gatherer {
 
         let threshold = self.threshold;
 
-        let strategy = askalono::ScanStrategy::new(&summary.store.store)
-            .mode(askalono::ScanMode::Elimination)
+        let strategy = spdx::detection::scan::Scanner::new(&summary.store.store)
             .confidence_threshold(0.5)
             .optimize(false)
             .max_passes(1);
@@ -496,6 +501,8 @@ impl Gatherer {
         } else {
             krates.krates_filtered(krates::DepKind::Dev)
         };
+
+        let lic_rx = regex::Regex::new(LICENSE_RX).expect("failed to compile regex");
 
         // Retrieve the license expression we'll use to evaluate the user's overall
         // constraints with.
@@ -522,7 +529,7 @@ impl Gatherer {
         // information for the crate and the constraints for the package still
         // match the current one being checked
         // 3. `license`
-        // 4. `license-file` + all LICENSE(-*)? files - Due to the prevalance
+        // 4. `license-file` + all LICENSE(-*)? files - Due to the prevalence
         // of dual-licensing in the rust ecosystem, many people forgo setting
         // license-file, so we use it and/or any LICENSE files
         summary.nfos = krates
@@ -532,7 +539,7 @@ impl Gatherer {
                 // license terms with
                 let mut synth_id = None;
 
-                let mut labels = smallvec::SmallVec::<[Label; 1]>::new();
+                let mut diags = smallvec::SmallVec::<[Diag; 1]>::new();
 
                 let mut get_span = |key: &'static str| -> (FileId, std::ops::Range<usize>) {
                     if let Some(id) = synth_id {
@@ -550,7 +557,10 @@ impl Gatherer {
 
                         {
                             let mut fl = files_lock.write();
-                            synth_id = Some(fl.add(krate.id.repr.clone(), synth_manifest));
+                            synth_id = Some(fl.add(
+                                format!("{}-synthesized.toml", krate.id.repr),
+                                synth_manifest,
+                            ));
                             (
                                 synth_id.unwrap(),
                                 get_toml_span(key, fl.source(synth_id.unwrap())),
@@ -578,16 +588,16 @@ impl Gatherer {
                             match lp.insert_clarification(clf) {
                                 Ok(_) => true,
                                 Err(reason) => {
-                                    if let MismatchReason::Error(err) = reason {
-                                        if err.kind() == std::io::ErrorKind::NotFound {
-                                            labels.push(
-                                                super::diags::MissingClarificationFile {
-                                                    expected: &clf.path,
-                                                    cfg_file_id: cfg.file_id,
-                                                }
-                                                .into(),
-                                            );
-                                        }
+                                    if let MismatchReason::Error(err) = reason
+                                        && err.kind() == std::io::ErrorKind::NotFound
+                                    {
+                                        diags.push(
+                                            super::diags::MissingClarificationFile {
+                                                expected: &clf.path,
+                                                cfg_file_id: cfg.file_id,
+                                            }
+                                            .into(),
+                                        );
                                     }
 
                                     false
@@ -606,17 +616,18 @@ impl Gatherer {
                                         source: LicenseExprSource::UserOverride,
                                     },
                                 },
-                                labels,
+                                diags,
                                 notes: Vec::new(),
                             };
                         }
                     }
                 }
 
-                // 2 TODO
+                // 2
+                if let Some(license_field) = krate.license.as_ref().filter(|l| !l.is_empty()) {
+                    let location =
+                        Self::get_license_span(&lic_rx, &files_lock, &krate.manifest_path);
 
-                // 3
-                if let Some(license_field) = &krate.license {
                     // Reasons this can fail:
                     //
                     // * Empty! The rust crate used to validate this field has a bug
@@ -629,72 +640,96 @@ impl Gatherer {
                     // rules to allow some license identifiers that aren't
                     // technically correct
 
-                    match spdx::Expression::parse(license_field) {
-                        Ok(validated) => {
-                            let (id, span) = get_span("license");
+                    const LAX: spdx::ParseMode = spdx::ParseMode {
+                        allow_slash_as_or_operator: true,
+                        allow_imprecise_license_names: true,
+                        allow_postfix_plus_on_gpl: true,
+                        allow_deprecated: true,
+                        allow_unknown: false,
+                    };
 
-                            return KrateLicense {
-                                krate,
-                                lic_info: LicenseInfo::SpdxExpression {
-                                    expr: validated,
-                                    nfo: LicenseExprInfo {
-                                        file_id: id,
-                                        offset: span.start,
-                                        source: LicenseExprSource::Metadata,
+                    const STRICT: spdx::ParseMode = spdx::ParseMode {
+                        // Really this should be false, but / instead of OR is
+                        // by _far_ the most common error in SPDX expressions,
+                        // while crates.io no longer allows them, they are still
+                        // in old versions, and while we could warn, realistically
+                        // there is nothing the downstream user can do other than
+                        // remove it or upgrade to a newer version that has a
+                        // correct license expression
+                        allow_slash_as_or_operator: true,
+                        allow_imprecise_license_names: false,
+                        allow_postfix_plus_on_gpl: false,
+                        allow_deprecated: false,
+                        allow_unknown: false,
+                    };
+
+                    let mut error_span = None;
+
+                    for mode in [STRICT, LAX] {
+                        match spdx::Expression::parse_mode(license_field, mode) {
+                            Ok(expr) => {
+                                let (file_id, offset) = location.clone().map_or_else(
+                                    || {
+                                        let (id, span) = get_span("license");
+                                        (id, span.start)
                                     },
-                                },
-                                labels,
-                                notes: Vec::new(),
-                            };
-                        }
-                        Err(err) => {
-                            let (id, lic_span) = get_span("license");
-                            let lic_span =
-                                lic_span.start + err.span.start..lic_span.start + err.span.end;
-
-                            labels.push(
-                                Label::secondary(id, lic_span).with_message(err.reason.to_string()),
-                            );
-
-                            // If we fail strict parsing, attempt to use lax parsing,
-                            // though still emitting a warning so the user is aware
-                            if let Ok(validated) = spdx::Expression::parse_mode(
-                                license_field,
-                                spdx::ParseMode {
-                                    allow_lower_case_operators: true,
-                                    // We already force correct this when loading crates
-                                    allow_slash_as_or_operator: false,
-                                    allow_imprecise_license_names: true,
-                                    allow_postfix_plus_on_gpl: true,
-                                },
-                            ) {
-                                let (id, span) = get_span("license");
+                                    |(file_id, range)| (file_id, range.start),
+                                );
 
                                 return KrateLicense {
                                     krate,
                                     lic_info: LicenseInfo::SpdxExpression {
-                                        expr: validated,
+                                        expr,
                                         nfo: LicenseExprInfo {
-                                            file_id: id,
-                                            offset: span.start,
-                                            source: LicenseExprSource::Metadata,
+                                            file_id,
+                                            offset,
+                                            source: LicenseExprSource::Metadata(location),
                                         },
                                     },
-                                    labels,
+                                    diags,
                                     notes: Vec::new(),
                                 };
                             }
+                            Err(error) => {
+                                // Don't give multiple diagnostics for the same parse error
+                                if let Some(es) = &error_span
+                                    && es == &error.span
+                                {
+                                    break;
+                                }
+
+                                error_span = Some(error.span.clone());
+
+                                let (file_id, span) =
+                                    location.clone().unwrap_or_else(|| get_span("license"));
+
+                                diags.push(
+                                    super::diags::ParseError {
+                                        span,
+                                        file_id,
+                                        error,
+                                    }
+                                    .into(),
+                                );
+                            }
                         }
                     }
-                } else {
-                    let (id, lic_span) = get_span("license");
-                    labels.push(
-                        Label::secondary(id, lic_span)
-                            .with_message("license expression was not specified"),
+                } else if krate.license.as_ref().is_some_and(|l| l.is_empty())
+                    && let Some((id, loc)) =
+                        Self::get_license_span(&lic_rx, &files_lock, &krate.manifest_path)
+                {
+                    diags.push(
+                        diags::EmptyLicenseField {
+                            file_id: id,
+                            span: loc,
+                        }
+                        .into(),
                     );
+                } else {
+                    diags.push(diags::NoLicenseField(krate).into());
                 }
 
-                // 4
+                // 3
                 // We might have already loaded the licenses to check them against a clarification
                 let license_pack = license_pack.unwrap_or_else(|| LicensePack::read(krate));
 
@@ -733,9 +768,13 @@ impl Gatherer {
                             for fail in failures {
                                 let span =
                                     fail.range.start + fail_offset..fail.range.end + fail_offset;
-                                labels.push(
-                                    Label::secondary(fail.file_id, span).with_message(fail.message),
-                                );
+                                diags.push(diags::diag(
+                                    Diagnostic::warning().with_label(
+                                        Label::secondary(fail.file_id, span)
+                                            .with_message(fail.message),
+                                    ),
+                                    diags::Code::GatherFailure,
+                                ));
                             }
 
                             return KrateLicense {
@@ -748,7 +787,7 @@ impl Gatherer {
                                         source: LicenseExprSource::LicenseFiles(file_sources),
                                     },
                                 },
-                                labels,
+                                diags,
                                 notes,
                             };
                         }
@@ -767,21 +806,32 @@ impl Gatherer {
                                 old_end
                             };
 
-                            for label in lic_file_labels {
-                                let span = label.range.start + old_end..label.range.end + old_end;
-                                labels.push(
-                                    Label::secondary(label.file_id, span)
-                                        .with_message(label.message),
-                                );
-                            }
+                            diags.extend(lic_file_labels.into_iter().map(|label| {
+                                diags::diag(
+                                    Diagnostic::warning().with_label(Label {
+                                        style:
+                                            codespan_reporting::diagnostic::LabelStyle::Secondary,
+                                        file_id: label.file_id,
+                                        range: label.range.start + old_end
+                                            ..label.range.end + old_end,
+                                        message: label.message,
+                                    }),
+                                    diags::Code::GatherFailure,
+                                )
+                            }));
                         }
                     }
                 }
 
                 // Just get a label for the crate name
                 let (id, nspan) = get_span("name");
-                labels.push(Label::primary(id, nspan).with_message(
-                    "a valid license expression could not be retrieved for the crate",
+                diags.push(diags::diag(
+                    Diagnostic::warning()
+                        .with_message(
+                            "a valid license expression could not be retrieved for the crate",
+                        )
+                        .with_label(Label::primary(id, nspan)),
+                    diags::Code::Unlicensed,
                 ));
 
                 // Well, we tried our very best. Actually that's not true, we could scan for license
@@ -791,7 +841,7 @@ impl Gatherer {
                 KrateLicense {
                     krate,
                     lic_info: LicenseInfo::Unlicensed,
-                    labels,
+                    diags,
                     notes: Vec::new(),
                 }
             })
@@ -800,6 +850,66 @@ impl Gatherer {
         summary.nfos.par_sort_by_key(|nfo| nfo.krate);
 
         summary
+    }
+
+    #[inline]
+    fn range(expr: &regex::Regex, manifest: &str) -> Option<std::ops::Range<usize>> {
+        let cap = expr.captures(manifest)?;
+        let cap = cap.get(1)?;
+        Some(cap.range())
+    }
+
+    #[inline]
+    pub fn correct_span(original: &str, error_span: &mut std::ops::Range<usize>) {
+        let mut count = 0;
+
+        // We adjust '/' => ' OR ' on load due to it being by
+        // far the most common error in expressions and it looks
+        // extremely unpleasant, but if that happens we need to adjust
+        // the span if it comes after one or more /
+        for (i, op) in memchr::memchr_iter(b'/', original.as_bytes()).enumerate() {
+            if error_span.start < i * 3 + op {
+                break;
+            }
+
+            count += 1;
+        }
+
+        error_span.start -= count * 3;
+        error_span.end -= count * 3;
+    }
+
+    fn get_license_span(
+        expr: &regex::Regex,
+        files: &parking_lot::RwLock<&mut Files>,
+        manifest_path: &Path,
+    ) -> Option<(FileId, std::ops::Range<usize>)> {
+        'exists: {
+            let r = files.read();
+            let Some(file_id) = r.id_for_path(manifest_path) else {
+                break 'exists;
+            };
+            let manifest = r.source(file_id);
+            let range = Self::range(expr, manifest)?;
+
+            return Some((file_id, range));
+        }
+
+        let manifest = std::fs::read_to_string(manifest_path).ok()?;
+
+        // We only ever load each manifest once, so it's fine if we take the
+        // hit for the load but don't actually store it if we somehow
+        // couldn't get the license expression
+        let range = Self::range(expr, &manifest)?;
+
+        // Unlikely/impossible, but we don't want to panic
+        let mut w = files.write();
+        if let Some(file_id) = w.id_for_path(manifest_path) {
+            Some((file_id, range))
+        } else {
+            let file_id = w.add(manifest_path, manifest);
+            Some((file_id, range))
+        }
     }
 }
 
@@ -820,13 +930,57 @@ mod test {
 
         let expected_hash = 0xbd0e_ed23;
 
-        if let super::PackFileData::Good(lf) = pf.data {
-            if lf.hash != expected_hash {
-                eprintln!("hash: {expected_hash:#x} != {:#x}", lf.hash);
+        if let super::PackFileData::Good(lf) = pf.data
+            && lf.hash != expected_hash
+        {
+            eprintln!("hash: {expected_hash:#x} != {:#x}", lf.hash);
 
-                for (i, (a, b)) in lf.content.chars().zip(expected.chars()).enumerate() {
-                    assert_eq!(a, b, "character @ {i}");
-                }
+            for (i, (a, b)) in lf.content.chars().zip(expected.chars()).enumerate() {
+                assert_eq!(a, b, "character @ {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn finds_and_corrects_span() {
+        let cases = [
+            ("MIT", None),
+            ("Apache-2.0 OR MIT", None),
+            ("GPL-2.0/Apache-2.0", Some("GPL-2.0 OR Apache-2.0")),
+            (
+                "GPL-2.0-only/GPL-3.0-only OR MIT AND ISC/GPL-3.0/Apache-2.0",
+                Some("GPL-2.0-only OR GPL-3.0-only OR MIT AND ISC OR GPL-3.0 OR Apache-2.0"),
+            ),
+            ("MIT/GPL-3.0", Some("MIT OR GPL-3.0")),
+        ];
+
+        let rx = regex::Regex::new(super::LICENSE_RX).unwrap();
+
+        for (original, xform) in cases {
+            let manifest = format!(
+                "[package]\nname = 'name-goes-here'\nversion = '0.1.0'\nlicense = '{original}'\nrepository = 'http://fake.com'"
+            );
+
+            let range = super::Gatherer::range(&rx, &manifest).unwrap();
+
+            if let Some(xform) = xform {
+                let mut err =
+                    spdx::Expression::parse_mode(xform, spdx::ParseMode::STRICT).unwrap_err();
+
+                let in_corrected = &xform[err.span.clone()];
+                let uncorrected =
+                    &manifest[range.start + err.span.start..range.start + err.span.end];
+                super::Gatherer::correct_span(original, &mut err.span);
+
+                let new = range.start + err.span.start..range.start + err.span.end;
+                let in_manifest = &manifest[new];
+
+                assert_eq!(
+                    in_corrected, in_manifest,
+                    "error was here '{in_corrected}', and we corrected it to '{in_manifest}', otherwise it would have been '{uncorrected}'"
+                );
+            } else {
+                spdx::Expression::parse_mode(original, spdx::ParseMode::STRICT).unwrap();
             }
         }
     }

@@ -203,7 +203,7 @@ pub(crate) fn write_diagnostics(
     let config = crate::diag::codespan_config();
 
     for diag in errors {
-        codespan_reporting::term::emit(&mut s, &config, files, &diag).unwrap();
+        codespan_reporting::term::emit_to_write_style(&mut s, &config, files, &diag).unwrap();
     }
 
     String::from_utf8(s.into_inner()).unwrap()
@@ -229,7 +229,7 @@ pub struct GatherCtx<'k, VC> {
     pub krates: &'k crate::Krates,
     pub files: crate::diag::Files,
     pub valid_cfg: VC,
-    spans: crate::diag::KrateSpans<'k>,
+    pub spans: crate::diag::KrateSpans<'k>,
 }
 
 pub fn setup<'k, C, VC>(
@@ -313,7 +313,7 @@ where
                         if let Ok(pack) = msg {
                             diagnostics.extend(pack);
                         } else {
-                            // Yay, the sender was dopped (i.e. check was finished)
+                            // Yay, the sender was dropped (i.e. check was finished)
                             break;
                         }
                     }
