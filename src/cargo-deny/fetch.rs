@@ -1,24 +1,43 @@
 use crate::common::ValidConfig;
 use anyhow::{Context as _, Error};
-use cargo_deny::{PathBuf, advisories, diag::Files};
+use cargo_deny::{advisories, diag::Files};
 
-#[derive(clap::ValueEnum, Debug, PartialEq, Eq, Copy, Clone)]
+#[derive(PartialEq, Eq, Copy, Clone)]
 pub enum FetchSource {
     Db,
     Index,
+    StdReplacement,
     All,
 }
 
-#[derive(clap::Parser, Debug, Clone)]
+crate::enum_args!(FetchSource : FetchSourceParser => {
+    "db" => Db,
+    "index" => Index,
+    "std-replacement" => StdReplacement,
+    "all" => All,
+});
+
 pub struct Args {
-    /// Path to the config to use
-    ///
-    /// Defaults to <cwd>/deny.toml if not specified
-    #[arg(short, long)]
-    config: Option<PathBuf>,
-    /// The sources to fetch
-    #[arg(value_enum)]
     sources: Vec<FetchSource>,
+}
+
+impl Args {
+    pub fn cmd() -> clap::Command {
+        clap::Command::new("fetch")
+            .about("Fetches remote data")
+            .args([clap::Arg::new("SOURCES")
+                .help("The sources to fetch.")
+                .value_parser(FetchSourceParser)
+                .action(clap::ArgAction::Append)])
+    }
+
+    pub fn parse(args: &mut clap::ArgMatches) -> Self {
+        Self {
+            sources: args
+                .remove_many("SOURCES")
+                .map_or(Default::default(), |v| v.collect()),
+        }
+    }
 }
 
 pub fn cmd(
@@ -26,10 +45,12 @@ pub fn cmd(
     args: Args,
     krate_ctx: crate::common::KrateContext,
 ) -> Result<(), Error> {
-    let cfg_path = krate_ctx.get_config_path(args.config.clone());
+    let cfg_path = krate_ctx.get_config_path()?;
 
     let mut files = Files::new();
-    let ValidConfig { advisories, .. } = ValidConfig::load(
+    let ValidConfig {
+        advisories, graph, ..
+    } = ValidConfig::load(
         cfg_path,
         krate_ctx.get_local_exceptions_path(),
         &mut files,
@@ -38,6 +59,7 @@ pub fn cmd(
 
     let mut index = None;
     let mut dbs = None;
+    let mut replacements = None;
 
     rayon::scope(|s| {
         let fetch_index = args.sources.is_empty()
@@ -48,9 +70,10 @@ pub fn cmd(
 
         if fetch_index {
             s.spawn(|_| {
+                let start = std::time::Instant::now();
                 log::info!("fetching crates");
-                index = Some(krate_ctx.fetch_krates());
-                log::info!("fetched crates");
+                index = Some(krate_ctx.fetch_krates(&graph.targets));
+                log::info!("fetched crates in {:?}", start.elapsed());
             });
         }
 
@@ -78,6 +101,21 @@ pub fn cmd(
                 ));
             });
         }
+
+        let fetch_replacement = args.sources.is_empty()
+            || args
+                .sources
+                .iter()
+                .any(|w| *w == FetchSource::StdReplacement || *w == FetchSource::All);
+
+        if fetch_replacement {
+            s.spawn(|_| {
+                let start = std::time::Instant::now();
+                log::info!("fetching std-replacement-data");
+                replacements = Some(cargo_deny::bans::replacements::ReplacementCtx::sync());
+                log::info!("fetched std-replacement-data in {:?}", start.elapsed());
+            });
+        }
     });
 
     if let Some(index) = index {
@@ -86,6 +124,10 @@ pub fn cmd(
 
     if let Some(dbs) = dbs {
         dbs.context("failed to fetch database")?;
+    }
+
+    if let Some(replacements) = replacements {
+        replacements.context("failed to fetch std-replacement-data")?;
     }
 
     Ok(())

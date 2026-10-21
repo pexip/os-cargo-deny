@@ -2,15 +2,12 @@ use crate::{
     LintLevel, PathBuf, Span, Spanned,
     cfg::{PackageSpecOrExtended, Reason, Scope, ValidationContext},
     diag::{Diagnostic, FileId, Label},
-    utf8path,
 };
-use anyhow::Context as _;
-use rustsec::advisory;
-use time::Duration;
+use std::time::Duration;
 use toml_span::{Deserialize, Value, de_helpers::*, value::ValueInner};
 use url::Url;
 
-pub(crate) type AdvisoryId = Spanned<advisory::Id>;
+pub(crate) type AdvisoryId = Spanned<String>;
 
 #[cfg_attr(test, derive(serde::Serialize))]
 pub(crate) struct IgnoreId {
@@ -77,6 +74,8 @@ pub struct Config {
     ignore: Vec<Spanned<IgnoreId>>,
     /// Whether to error on unmaintained advisories, and for what scope
     pub unmaintained: Spanned<Scope>,
+    /// Whether to error on unsound advisories, and for what scope
+    pub unsound: Spanned<Scope>,
     /// Ignore yanked crates
     pub ignore_yanked: Vec<Spanned<PackageSpecOrExtended<Reason>>>,
     /// Use the git executable to fetch advisory database rather than gitoxide
@@ -91,6 +90,9 @@ pub struct Config {
     /// use the '.' separator instead of ',' which is used by some locales and
     /// supported in the RFC3339 format, but not by this implementation
     pub maximum_db_staleness: Spanned<Duration>,
+    /// Determines the response to advisories in the `ignore`ed list which do not
+    /// exist in the dependency tree.
+    pub unused_ignored_advisory: LintLevel,
     deprecated_spans: Vec<Span>,
 }
 
@@ -101,17 +103,19 @@ impl Default for Config {
             db_urls: Vec::new(),
             ignore: Vec::new(),
             unmaintained: Spanned::new(crate::cfg::Scope::All),
+            unsound: Spanned::new(crate::cfg::Scope::Workspace),
             ignore_yanked: Vec::new(),
             yanked: Spanned::new(LintLevel::Warn),
             git_fetch_with_cli: None,
             disable_yank_checking: false,
-            maximum_db_staleness: Spanned::new(Duration::seconds_f64(NINETY_DAYS)),
+            maximum_db_staleness: Spanned::new(Duration::from_secs(NINETY_DAYS)),
             deprecated_spans: Vec::new(),
+            unused_ignored_advisory: LintLevel::Warn,
         }
     }
 }
 
-const NINETY_DAYS: f64 = 90. * 24. * 60. * 60. * 60.;
+const NINETY_DAYS: u64 = 90 * 24 * 60 * 60;
 
 impl<'de> Deserialize<'de> for Config {
     fn deserialize(value: &mut Value<'de>) -> Result<Self, toml_span::DeserError> {
@@ -148,10 +152,10 @@ impl<'de> Deserialize<'de> for Config {
         let mut fdeps = Vec::new();
 
         let _vulnerability = deprecated::<LintLevel>(&mut th, "vulnerability", &mut fdeps);
-        let _unsound = deprecated::<LintLevel>(&mut th, "unsound", &mut fdeps);
         let _notice = deprecated::<LintLevel>(&mut th, "notice", &mut fdeps);
 
         let unmaintained = th.optional_s::<Scope>("unmaintained");
+        let unsound = th.optional_s::<Scope>("unsound");
 
         let yanked = th
             .optional_s("yanked")
@@ -165,21 +169,22 @@ impl<'de> Deserialize<'de> for Config {
                     for mut v in ida {
                         match v.take() {
                             ValueInner::String(s) => {
-                                // Attempt to parse an advisory id first, note we can't
-                                // just immediately use parse as the from_str implementation
-                                // for id will just blindly accept any string
-                                if advisory::IdKind::detect(s.as_ref()) != advisory::IdKind::Other
-                                    && let Ok(id) = s.parse::<advisory::Id>()
-                                {
-                                    u.push(Spanned::with_span(
-                                        IgnoreId {
-                                            id: Spanned::with_span(id, v.span),
-                                            reason: None,
-                                        },
-                                        v.span,
-                                    ));
-                                    continue;
-                                }
+                                if let Some((kind, _)) = s.split_once('-') {
+                                    // We could do matches!(kind, "RUSTSEC" | "CVE" | "GHSA" | "TALOS")`, but that's
+                                    // probably overkill, we can instead just rely on the fact that, at least as of now,
+                                    // all off the official rustsec advisory prefixes are all uppercase ASCII, and uppercase
+                                    // ASCII is not allowed for crate names
+                                    if kind.chars().all(|c| c.is_ascii_uppercase()) {
+                                        u.push(Spanned::with_span(
+                                            IgnoreId {
+                                                id: Spanned::with_span(s.into(), v.span),
+                                                reason: None,
+                                            },
+                                            v.span,
+                                        ));
+                                        continue;
+                                    }
+                                };
 
                                 v.set(ValueInner::String(s));
                             }
@@ -228,38 +233,10 @@ impl<'de> Deserialize<'de> for Config {
         } else {
             (Vec::new(), Vec::new())
         };
-        let st = |th: &mut TableHelper<'_>, fdeps: &mut Vec<Span>| {
-            let (k, mut v) = th.take("severity-threshold")?;
 
-            fdeps.push(k.span);
-            let s = match v.take_string(Some(
-                "https://docs.rs/rustsec/latest/rustsec/advisory/enum.Severity.html",
-            )) {
-                Ok(s) => s,
-                Err(err) => {
-                    th.errors.push(err);
-                    return None;
-                }
-            };
-
-            match s.parse::<advisory::Severity>() {
-                Ok(st) => Some(st),
-                Err(err) => {
-                    th.errors.push(
-                        (
-                            toml_span::ErrorKind::Custom(
-                                format!("failed to parse rustsec::Severity: {err}").into(),
-                            ),
-                            v.span,
-                        )
-                            .into(),
-                    );
-                    None
-                }
-            }
-        };
-
-        let _severity_threshold = st(&mut th, &mut fdeps);
+        if let Some((key, _)) = th.take("severity-threshold") {
+            fdeps.push(key.span);
+        }
         let git_fetch_with_cli = th.optional("git-fetch-with-cli");
         let disable_yank_checking = th.optional("disable-yank-checking").unwrap_or_default();
         let maximum_db_staleness = if let Some((_, mut val)) = th.take("maximum-db-staleness") {
@@ -286,11 +263,15 @@ impl<'de> Deserialize<'de> for Config {
             None
         };
 
+        let unused_ignored_advisory = th
+            .optional("unused-ignored-advisory")
+            .unwrap_or(LintLevel::Warn);
+
         th.finalize(None)?;
 
         // Use the 90 days default as a fallback
-        let maximum_db_staleness = maximum_db_staleness
-            .unwrap_or_else(|| Spanned::new(Duration::seconds_f64(NINETY_DAYS)));
+        let maximum_db_staleness =
+            maximum_db_staleness.unwrap_or_else(|| Spanned::new(Duration::from_secs(NINETY_DAYS)));
 
         Ok(Self {
             db_path,
@@ -298,11 +279,13 @@ impl<'de> Deserialize<'de> for Config {
             yanked,
             ignore,
             unmaintained: unmaintained.unwrap_or(Spanned::new(Scope::All)),
+            unsound: unsound.unwrap_or(Spanned::new(Scope::Workspace)),
             ignore_yanked,
             git_fetch_with_cli,
             disable_yank_checking,
             maximum_db_staleness,
             deprecated_spans: fdeps,
+            unused_ignored_advisory,
         })
     }
 }
@@ -356,16 +339,11 @@ impl crate::cfg::UnvalidatedConfig for Config {
                 }
             }
         } else {
-            fn def_path() -> anyhow::Result<PathBuf> {
-                utf8path(
-                    home::cargo_home()
-                        .context("failed to resolve CARGO_HOME or HOME")?
-                        .join("advisory-dbs"),
-                )
-            }
-
-            match def_path() {
-                Ok(pb) => Some(pb),
+            match crate::cargo_home() {
+                Ok(mut pb) => {
+                    pb.push("advisory-dbs");
+                    Some(pb)
+                }
                 Err(err) => {
                     ctx.diagnostics.push(Diagnostic::error()
                         .with_message(format_args!("unable to obtain default advisory-dbs directory: {err:#}"))
@@ -398,6 +376,7 @@ impl crate::cfg::UnvalidatedConfig for Config {
             db_urls,
             ignore: ignore.into_iter().map(|s| s.value).collect(),
             unmaintained: self.unmaintained,
+            unsound: self.unsound,
             ignore_yanked: ignore_yanked
                 .into_iter()
                 .map(|s| crate::bans::SpecAndReason {
@@ -411,22 +390,70 @@ impl crate::cfg::UnvalidatedConfig for Config {
             git_fetch_with_cli: self.git_fetch_with_cli.unwrap_or_default(),
             disable_yank_checking: self.disable_yank_checking,
             maximum_db_staleness: self.maximum_db_staleness,
+            unused_ignored_advisory: self.unused_ignored_advisory,
         }
     }
 }
 
-#[cfg_attr(test, derive(serde::Serialize))]
 pub struct ValidConfig {
     pub file_id: FileId,
     pub db_path: PathBuf,
     pub db_urls: Vec<Spanned<Url>>,
     pub(crate) ignore: Vec<IgnoreId>,
     pub(crate) unmaintained: Spanned<Scope>,
+    pub(crate) unsound: Spanned<Scope>,
     pub(crate) ignore_yanked: Vec<crate::bans::SpecAndReason>,
     pub yanked: Spanned<LintLevel>,
     pub git_fetch_with_cli: bool,
     pub disable_yank_checking: bool,
     pub maximum_db_staleness: Spanned<Duration>,
+    pub unused_ignored_advisory: LintLevel,
+}
+
+#[cfg(test)]
+impl serde::Serialize for ValidConfig {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap as _;
+
+        let mut s = serializer.serialize_map(Some(12))?;
+
+        struct DbUrls<'a>(&'a [Spanned<Url>]);
+
+        impl serde::Serialize for DbUrls<'_> {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                use serde::ser::SerializeSeq as _;
+
+                let mut s = serializer.serialize_seq(Some(self.0.len()))?;
+
+                for url in self.0 {
+                    s.serialize_element(url.value.as_str())?;
+                }
+
+                s.end()
+            }
+        }
+
+        s.serialize_entry("file_id", &self.file_id)?;
+        s.serialize_entry("db_path", &self.db_path)?;
+        s.serialize_entry("db_urls", &DbUrls(&self.db_urls))?;
+        s.serialize_entry("ignore", &self.ignore)?;
+        s.serialize_entry("unmaintained", &self.unmaintained)?;
+        s.serialize_entry("unsound", &self.unsound)?;
+        s.serialize_entry("ignore_yanked", &self.ignore_yanked)?;
+        s.serialize_entry("yanked", &self.yanked)?;
+        s.serialize_entry("git_fetch_with_cli", &self.git_fetch_with_cli)?;
+        s.serialize_entry("disable_yank_checking", &self.disable_yank_checking)?;
+        s.serialize_entry("maximum_db_staleness", &self.maximum_db_staleness)?;
+        s.serialize_entry("unused_ignored_advisory", &self.unused_ignored_advisory)?;
+
+        s.end()
+    }
 }
 
 /// We need to implement this ourselves since time doesn't support it
@@ -518,7 +545,7 @@ fn parse_rfc3339_duration(value: &str) -> anyhow::Result<Duration> {
         }
     }
 
-    let mut duration = Duration::new(0, 0);
+    let mut duration = 0.0;
 
     // The format requires that the units are in a specific order, but each
     // unit is optional
@@ -571,8 +598,7 @@ fn parse_rfc3339_duration(value: &str) -> anyhow::Result<Duration> {
                 .find_map(|(c, uts)| (*c == unitc).then_some(*uts))
                 .unwrap();
 
-            duration += time::Duration::checked_seconds_f64(unit_value * unit_to_seconds)
-                .with_context(|| format!("value '{unit_value}' for '{unitc}' is out of range"))?;
+            duration += unit_value * unit_to_seconds;
         }
 
         last_unitc = unitc;
@@ -582,7 +608,7 @@ fn parse_rfc3339_duration(value: &str) -> anyhow::Result<Duration> {
 
     anyhow::ensure!(supplied_units > 0, "must supply at least one time unit");
 
-    Ok(duration)
+    Ok(Duration::from_secs_f64(duration))
 }
 
 /// We could just hardcode these, but this makes testing easier
@@ -595,15 +621,11 @@ enum Expand<'v> {
 fn normal_expand(exp: Expand<'_>) -> anyhow::Result<Option<String>> {
     match exp {
         Expand::Home => {
-            let hd =
-                home::home_dir().context("HOME directory could not be obtained from the OS")?;
-            let uhd = utf8path(hd)?;
-            Ok(Some(uhd.into()))
+            let hd = crate::home()?;
+            Ok(Some(hd.into()))
         }
         // We treat this one variable specially
-        Expand::Var("CARGO_HOME") => Ok(Some(
-            utf8path(home::cargo_home().context("unable to determine CARGO_HOME")?)?.into(),
-        )),
+        Expand::Var("CARGO_HOME") => Ok(Some(crate::cargo_home()?.into())),
         Expand::Var(var_name) => match std::env::var(var_name) {
             Ok(vv) => Ok(Some(vv)),
             Err(std::env::VarError::NotPresent) => Ok(None),
@@ -852,7 +874,7 @@ ignore = [
                 Ok(parsed) => {
                     assert_eq!(
                         parsed,
-                        Duration::seconds_f64(*secs),
+                        Duration::from_secs_f64(*secs),
                         "unexpected duration for '{dur}'"
                     );
                 }
@@ -883,7 +905,7 @@ ignore = [
             };
         }
 
-        // These closurs need to be kept aligned with the toml array below
+        // These closures need to be kept aligned with the toml array below
         #[allow(clippy::type_complexity)]
         let expanders: [Option<Box<dyn Fn(Expand<'_>) -> anyhow::Result<Option<String>>>>;
             16] = [
@@ -896,7 +918,7 @@ ignore = [
             })),
             Some(Box::new(|exp| {
                 if let Expand::Home = exp {
-                    utf8path(std::ffi::OsStr::from_bytes(SURPRISE).into())?;
+                    crate::utf8path(std::ffi::OsStr::from_bytes(SURPRISE).into())?;
                     unreachable!();
                 } else {
                     panic!("unexpected request")
@@ -982,7 +1004,7 @@ expansions = [
 
         let mut output = String::new();
 
-        for (mut expansion, expander) in exp.into_iter().zip(expanders.into_iter()) {
+        for (mut expansion, expander) in exp.into_iter().zip(expanders) {
             let expansion = toml_span::Spanned::<String>::deserialize(&mut expansion)
                 .unwrap()
                 .map();

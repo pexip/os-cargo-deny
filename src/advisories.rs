@@ -1,11 +1,12 @@
 pub mod cfg;
 pub(crate) mod diags;
 mod helpers;
+pub mod model;
 
 use crate::{LintLevel, diag};
 pub use diags::Code;
 pub use helpers::{
-    db::{AdvisoryDb, DbSet, Fetch, Id, Report},
+    db::{self, AdvisoryDb, DbSet, Fetch, Report},
     index::{Entry, Indices},
 };
 
@@ -34,6 +35,7 @@ pub fn check<R, S>(
     ctx: crate::CheckCtx<'_, cfg::ValidConfig>,
     advisory_dbs: &DbSet,
     audit_compatible_reporter: Option<R>,
+    serialize_advisories: crate::SerializeAdvisory,
     indices: Option<Indices<'_>>,
     sink: S,
 ) where
@@ -44,7 +46,14 @@ pub fn check<R, S>(
     let emit_audit_compatible_reports = audit_compatible_reporter.is_some();
 
     let (report, yanked) = rayon::join(
-        || Report::generate(advisory_dbs, ctx.krates, emit_audit_compatible_reports),
+        || {
+            Report::generate(
+                &ctx.cfg,
+                advisory_dbs,
+                ctx.krates,
+                emit_audit_compatible_reports,
+            )
+        },
         || {
             if let Some(indices) = indices {
                 let yanked: Vec<_> = ctx
@@ -77,7 +86,8 @@ pub fn check<R, S>(
     let ws_set = if matches!(
         ctx.cfg.unmaintained.value,
         Scope::Workspace | Scope::Transitive
-    ) {
+    ) || matches!(ctx.cfg.unsound.value, Scope::Workspace | Scope::Transitive)
+    {
         ctx.krates
             .workspace_members()
             .filter_map(|wm| {
@@ -95,34 +105,41 @@ pub fn check<R, S>(
     // Emit diagnostics for any advisories found that matched crates in the graph
     'lup: for (krate, advisory) in &report.advisories {
         'block: {
-            if advisory
-                .metadata
-                .informational
-                .as_ref()
-                .is_some_and(|info| info.is_unmaintained())
-            {
-                match ctx.cfg.unmaintained.value {
-                    Scope::All => break 'block,
-                    Scope::None => continue 'lup,
-                    Scope::Workspace | Scope::Transitive => {
-                        let nid = ctx.krates.nid_for_kid(&krate.id).unwrap();
-                        let dds = ctx.krates.direct_dependents(nid);
+            let Some(scope) =
+                advisory
+                    .advisory
+                    .informational
+                    .as_ref()
+                    .and_then(|info| match info {
+                        model::Informational::Unmaintained => Some(&ctx.cfg.unmaintained),
+                        model::Informational::Unsound => Some(&ctx.cfg.unsound),
+                        _ => None,
+                    })
+            else {
+                break 'block;
+            };
 
-                        let transitive = ctx.cfg.unmaintained.value == Scope::Transitive;
-                        if dds
-                            .iter()
-                            .any(|dd| ws_set.contains(&dd.krate.id) ^ transitive)
-                        {
-                            break 'block;
-                        }
+            match scope.value {
+                Scope::All => break 'block,
+                Scope::None => continue 'lup,
+                Scope::Workspace | Scope::Transitive => {
+                    let nid = ctx.krates.nid_for_kid(&krate.id).unwrap();
+                    let dds = ctx.krates.direct_dependents(nid);
 
-                        continue 'lup;
+                    let transitive = scope.value == Scope::Transitive;
+                    if dds
+                        .iter()
+                        .any(|dd| ws_set.contains(&dd.krate.id) ^ transitive)
+                    {
+                        break 'block;
                     }
+
+                    continue 'lup;
                 }
             }
         }
 
-        let diag = ctx.diag_for_advisory(krate, advisory, |index| {
+        let diag = ctx.diag_for_advisory(krate, serialize_advisories, advisory, |index| {
             ignore_hits.as_mut_bitslice().set(index, true);
         });
 
@@ -171,7 +188,9 @@ pub fn check<R, S>(
         .zip(ctx.cfg.ignore.iter())
         .filter_map(|(hit, ignore)| if !hit { Some(ignore) } else { None })
     {
-        sink.push(ctx.diag_for_advisory_not_encountered(ignore));
+        sink.push(
+            ctx.diag_for_advisory_not_encountered(ignore, ctx.cfg.unused_ignored_advisory.into()),
+        );
     }
 
     for ignore in ignore_yanked_hits
@@ -179,7 +198,10 @@ pub fn check<R, S>(
         .zip(ctx.cfg.ignore_yanked.iter())
         .filter_map(|(hit, ignore)| if !hit { Some(ignore) } else { None })
     {
-        sink.push(ctx.diag_for_ignored_yanked_not_encountered(ignore));
+        sink.push(ctx.diag_for_ignored_yanked_not_encountered(
+            ignore,
+            ctx.cfg.unused_ignored_advisory.into(),
+        ));
     }
 
     if let Some(mut reporter) = audit_compatible_reporter {

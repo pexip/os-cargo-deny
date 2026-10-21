@@ -65,6 +65,7 @@ expression: validated
       "inner": null
     }
   ],
+  "allow_workspace": false,
   "features": [
     {
       "spec": {
@@ -144,5 +145,12 @@ expression: validated
     "include_workspace": true,
     "include_archives": true,
     "interpreted": "deny"
+  },
+  "std_replacements": {
+    "scope": "Workspace",
+    "level": "deny",
+    "rust_version": "1.0.0",
+    "ignore": [],
+    "ignore_rust_version": "None"
   }
 }

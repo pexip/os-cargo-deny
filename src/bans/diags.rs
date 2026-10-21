@@ -3,6 +3,7 @@ use std::fmt;
 use crate::{
     Krate, Spanned,
     bans::{SpecAndReason, cfg},
+    cfg::PackageSpecOrExtended,
     diag::{
         CfgCoord, Check, Diag, Diagnostic, FileId, GraphNode, KrateCoord, Label, Pack, Severity,
     },
@@ -59,6 +60,8 @@ pub enum Code {
     UnusedWorkspaceDependency,
     NonUtf8Path,
     NonRootPath,
+    ReplacedInStd,
+    UnmatchedReplacementIgnore,
 }
 
 impl Code {
@@ -129,6 +132,12 @@ impl Code {
                 "A non-utf8 path was detected in a crate that executes at build time"
             }
             Self::NonRootPath => "A path was not rooted in the crate source",
+            Self::ReplacedInStd => {
+                "A crate has some or all of its functionality available in std and/or core"
+            }
+            Self::UnmatchedReplacementIgnore => {
+                "A std replacement ignore entry did not match any crate in the graph"
+            }
         }
     }
 }
@@ -442,17 +451,24 @@ impl From<UnmatchedSkipRoot> for Diag {
 
 pub(crate) struct BuildScriptNotAllowed<'a> {
     pub(crate) krate: &'a Krate,
+    pub(crate) build_script: Option<(HomePath<'a>, super::cfg::Checksum)>,
 }
 
 impl<'a> From<BuildScriptNotAllowed<'a>> for Diag {
     fn from(bs: BuildScriptNotAllowed<'a>) -> Self {
-        diag(
-            Diagnostic::new(Severity::Error).with_message(format_args!(
-                "crate '{}' has a build script but is not allowed to have one",
-                bs.krate
-            )),
-            Code::BuildScriptNotAllowed,
-        )
+        let mut diagnostic = Diagnostic::new(Severity::Error).with_message(format_args!(
+            "crate '{}' has a build script but is not allowed to have one",
+            bs.krate
+        ));
+
+        if let Some((path, checksum)) = bs.build_script {
+            diagnostic = diagnostic.with_notes(vec![
+                format!("path = '{path}'"),
+                format!("checksum = '{checksum}'"),
+            ]);
+        }
+
+        diag(diagnostic, Code::BuildScriptNotAllowed)
     }
 }
 
@@ -510,7 +526,7 @@ impl From<ExactFeaturesMismatch<'_>> for Diag {
             diag,
             code: dcode(Code::ExactFeaturesMismatch),
             graph_nodes: graph_nodes.into(),
-            extra: None,
+            advisory: None,
             with_features: true,
         }
     }
@@ -542,7 +558,7 @@ impl From<FeatureNotExplicitlyAllowed<'_>> for Diag {
                 feature: None,
             })
             .collect(),
-            extra: None,
+            advisory: None,
             with_features: true,
         }
     }
@@ -574,7 +590,7 @@ impl From<FeatureBanned<'_>> for Diag {
                 feature: Some(fed.feature.value.clone()),
             })
             .collect(),
-            extra: None,
+            advisory: None,
             with_features: true,
         }
     }
@@ -606,7 +622,7 @@ impl From<UnknownFeature<'_>> for Diag {
                 feature: None,
             })
             .collect(),
-            extra: None,
+            advisory: None,
             with_features: false,
         }
     }
@@ -638,7 +654,7 @@ impl From<DefaultFeatureEnabled<'_>> for Diag {
                 feature: Some("default".to_owned()),
             })
             .collect(),
-            extra: None,
+            advisory: None,
             with_features: true,
         }
     }
@@ -690,7 +706,7 @@ impl From<ExplicitPathAllowance<'_>> for Diag {
             code: dcode(Code::PathBypassed),
             // Not really helpful to show graphs for these
             graph_nodes: Default::default(),
-            extra: None,
+            advisory: None,
             with_features: false,
         }
     }
@@ -728,7 +744,7 @@ impl From<GlobAllowance<'_>> for Diag {
             code: dcode(Code::PathBypassedByGlob),
             // Not really helpful to show graphs for these
             graph_nodes: Default::default(),
-            extra: None,
+            advisory: None,
             with_features: false,
         }
     }
@@ -756,7 +772,7 @@ impl From<ChecksumMatch<'_>> for Diag {
             code: dcode(Code::ChecksumMatch),
             // Not really helpful to show graphs for these
             graph_nodes: Default::default(),
-            extra: None,
+            advisory: None,
             with_features: false,
         }
     }
@@ -766,18 +782,21 @@ pub(crate) struct ChecksumMismatch<'a> {
     pub(crate) path: HomePath<'a>,
     pub(crate) checksum: &'a Spanned<super::cfg::Checksum>,
     pub(crate) severity: Option<Severity>,
-    pub(crate) error: String,
+    pub(crate) error: Option<String>,
+    pub(crate) calculated: Option<super::cfg::Checksum>,
     pub(crate) file_id: FileId,
 }
 
 impl From<ChecksumMismatch<'_>> for Diag {
     fn from(cm: ChecksumMismatch<'_>) -> Diag {
         let mut notes = vec![format!("path = '{}'", cm.path)];
-        notes.extend(
-            format!("error = {:#}", cm.error)
-                .lines()
-                .map(|l| l.to_owned()),
-        );
+        if let Some(error) = cm.error {
+            notes.extend(format!("error = '{error:#}'").lines().map(|l| l.to_owned()));
+        } else if let Some(calculated) = cm.calculated {
+            notes.push(format!(
+                "error = 'calculated different checksum {calculated}'"
+            ));
+        }
 
         let diag = Diagnostic::new(cm.severity.unwrap_or(Severity::Error))
             .with_message("file did not match the expected checksum")
@@ -792,7 +811,7 @@ impl From<ChecksumMismatch<'_>> for Diag {
             code: dcode(Code::ChecksumMismatch),
             // Not really helpful to show graphs for these
             graph_nodes: Default::default(),
-            extra: None,
+            advisory: None,
             with_features: false,
         }
     }
@@ -817,7 +836,7 @@ impl From<DeniedByExtension<'_>> for Diag {
             code: dcode(Code::DeniedByExtension),
             // Not really helpful to show graphs for these
             graph_nodes: Default::default(),
-            extra: None,
+            advisory: None,
             with_features: false,
         }
     }
@@ -864,7 +883,7 @@ impl From<DetectedExecutable<'_>> for Diag {
             code: dcode(code),
             // Not really helpful to show graphs for these
             graph_nodes: Default::default(),
-            extra: None,
+            advisory: None,
             with_features: false,
         }
     }
@@ -894,7 +913,7 @@ impl From<UnableToCheckPath<'_>> for Diag {
             code: dcode(Code::UnableToCheckPath),
             // Not really helpful to show graphs for these
             graph_nodes: Default::default(),
-            extra: None,
+            advisory: None,
             with_features: false,
         }
     }
@@ -925,7 +944,7 @@ impl From<FeaturesEnabled<'_>> for Diag {
             code: dcode(Code::FeaturesEnabled),
             // Not really helpful to show graphs for these
             graph_nodes: Default::default(),
-            extra: None,
+            advisory: None,
             with_features: false,
         }
     }
@@ -1110,6 +1129,178 @@ impl<'p> From<NonRootPath<'p>> for Diag {
                 value.path, value.root
             )),
             Code::NonRootPath,
+        )
+    }
+}
+
+pub(crate) struct ReplacedInStd<'a> {
+    pub(crate) krate: &'a Krate,
+    pub(crate) replacement: super::replacements::Replacement,
+    pub(crate) severity: Severity,
+    pub(crate) colorize: bool,
+}
+
+impl<'a> From<ReplacedInStd<'a>> for Diag {
+    fn from(ris: ReplacedInStd<'a>) -> Self {
+        use nu_ansi_term::{Color, Style};
+        use std::fmt::Write as _;
+
+        let mut notes = String::with_capacity(256);
+
+        macro_rules! wl {
+            ($($arg:tt)*) => {
+                writeln!(&mut notes, $($arg)*).unwrap();
+            };
+        }
+
+        macro_rules! wd {
+            ($in:expr) => {
+                writeln!(&mut notes, "{}", $in).unwrap();
+            };
+        }
+
+        // Always show the crate name as it would appear in source code
+        let krate_name = ris.krate.name.replace('-', "_");
+
+        let print_rep = |notes: &mut String, api: &super::replacements::ApiReplacement| {
+            macro_rules! wl {
+                    ($($arg:tt)*) => {
+                        writeln!(notes, $($arg)*).unwrap();
+                    };
+                }
+
+            wl!("```diff");
+            if ris.colorize {
+                wl!(
+                    "{}- [{krate_name}::{}]({}){}",
+                    Color::Red.prefix(),
+                    api.krate.name,
+                    api.krate.url,
+                    Color::Red.suffix(),
+                );
+                wl!(
+                    "{}+ [{}]({}){}",
+                    Color::Green.prefix(),
+                    api.std.name,
+                    api.std.url,
+                    Color::Green.suffix(),
+                );
+            } else {
+                wl!("- [{krate_name}::{}]({})", api.krate.name, api.krate.url);
+                wl!("+ [{}]({})", api.std.name, api.std.url);
+            };
+            wl!("```\n");
+
+            if let Some(note) = api.note {
+                wl!("  {note}\n");
+            }
+        };
+
+        // We unconditionally emit this, entries are not added to the std-replacement-data dataset unless they have at
+        // least 1 stabilized API
+        if ris.colorize {
+            wd!(Color::Green.paint("## Stable"));
+        } else {
+            wd!("## Stable");
+        }
+
+        let bold = Style::new().bold();
+        let mut cur_minor = 0;
+        let mut unstable = false;
+        let mut unavailable = false;
+
+        for replacement in ris.replacement.iter() {
+            match replacement {
+                super::replacements::ReplacementItem::Stable { replacement, minor } => {
+                    if minor != cur_minor {
+                        if ris.colorize {
+                            wl!("### {}1.{minor}.0{}", bold.prefix(), bold.suffix());
+                        } else {
+                            wl!("### 1.{minor}.0");
+                        }
+
+                        cur_minor = minor;
+                    }
+
+                    print_rep(&mut notes, &replacement);
+                }
+                super::replacements::ReplacementItem::Unstable { replacement } => {
+                    if !unstable {
+                        if ris.colorize {
+                            wd!(Color::Yellow.paint("## Unstable"));
+                        } else {
+                            wd!("## Unstable");
+                        }
+                        unstable = true;
+                    }
+
+                    print_rep(&mut notes, &replacement);
+                }
+                super::replacements::ReplacementItem::Unavailable { api } => {
+                    if !unavailable {
+                        if ris.colorize {
+                            wd!(Color::Red.paint("## Unavailable"));
+                        } else {
+                            wd!("## Unavailable");
+                        }
+                        unavailable = true;
+                    }
+
+                    if ris.colorize {
+                        wl!(
+                            "  - {}{}::{}{} - {}",
+                            Color::Cyan.prefix(),
+                            ris.krate.name,
+                            api.name,
+                            Color::Cyan.suffix(),
+                            api.url
+                        );
+                    } else {
+                        wl!("  - {}::{} - {}", ris.krate.name, api.name, api.url);
+                    }
+                }
+            }
+        }
+
+        diag(
+            Diagnostic::new(ris.severity)
+                .with_message(format_args!(
+                    "crate '{}' is partially or fully replaced in std and/or core",
+                    ris.krate,
+                ))
+                .with_notes(vec![notes]),
+            Code::ReplacedInStd,
+        )
+    }
+}
+
+pub(crate) struct UnmatchedReplacementIgnore<'a> {
+    pub(crate) id: FileId,
+    pub(crate) ignore_cfg: &'a PackageSpecOrExtended<crate::cfg::Reason>,
+}
+
+impl<'a> From<UnmatchedReplacementIgnore<'a>> for Diag {
+    fn from(ic: UnmatchedReplacementIgnore<'a>) -> Self {
+        let mut labels = Vec::with_capacity(ic.ignore_cfg.inner.as_ref().map_or(1, |_| 2));
+        labels.push(Label {
+            style: codespan_reporting::diagnostic::LabelStyle::Primary,
+            file_id: ic.id,
+            range: ic.ignore_cfg.spec.name.span.into(),
+            message: "unmatched ignore configuration".into(),
+        });
+
+        if let Some(reason) = &ic.ignore_cfg.inner {
+            labels.push(Label::secondary(ic.id, reason.0.span).with_message("ignore reason"));
+        }
+
+        diag(
+            Diagnostic::new(Severity::Warning)
+                .with_message(format_args!(
+                    "std replacement ignore '{}' was not encountered",
+                    ic.ignore_cfg.spec,
+                ))
+                .with_labels(labels),
+            Code::UnmatchedReplacementIgnore,
         )
     }
 }

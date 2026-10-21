@@ -1,6 +1,7 @@
 pub mod cfg;
 mod diags;
 mod graph;
+pub mod replacements;
 
 use self::cfg::{ValidBuildConfig, ValidConfig, ValidTreeSkip};
 use crate::{
@@ -199,6 +200,7 @@ pub fn check(
         denied,
         denied_multiple_versions,
         allowed,
+        allow_workspace,
         features,
         workspace_default_features,
         external_default_features,
@@ -211,6 +213,7 @@ pub fn check(
         wildcards,
         allow_wildcard_paths,
         build,
+        std_replacements,
     } = ctx.cfg;
 
     let mut sink = sink.into();
@@ -380,6 +383,25 @@ pub fn check(
             .collect(),
     );
 
+    // Collect workspace members if allow_workspace is enabled
+    let workspace_members: std::collections::HashSet<Kid> = if allow_workspace {
+        let members: std::collections::HashSet<Kid> = ctx
+            .krates
+            .workspace_members()
+            .filter_map(|node| {
+                if let krates::Node::Krate { id, .. } = node {
+                    Some(id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        members
+    } else {
+        std::collections::HashSet::new()
+    };
+
     let report_duplicates = |multi_detector: &mut MultiDetector<'_>, sink: &mut diag::ErrorSink| {
         if multi_detector.dupes.len() != 1 {
             // Filter out crates that depend on another version of themselves https://github.com/dtolnay/semver-trick
@@ -522,33 +544,6 @@ pub fn check(
         }
     };
 
-    enum Sink<'k> {
-        Build(crossbeam::channel::Sender<(usize, &'k Krate, Pack)>),
-        NoBuild(diag::ErrorSink),
-    }
-
-    impl<'k> Sink<'k> {
-        #[inline]
-        fn push(&mut self, index: usize, krate: &'k Krate, pack: Pack) {
-            match self {
-                Self::Build(tx) => tx.send((index, krate, pack)).unwrap(),
-                Self::NoBuild(sink) => {
-                    if !pack.is_empty() {
-                        sink.push(pack);
-                    }
-                }
-            }
-        }
-    }
-
-    let (mut tx, build_config) = if let Some(bc) = build {
-        let (tx, rx) = crossbeam::channel::unbounded();
-
-        (Sink::Build(tx), Some((bc, rx)))
-    } else {
-        (Sink::NoBuild(sink.clone()), None)
-    };
-
     struct BuildCheckCtx {
         bypasses: parking_lot::Mutex<BitVec>,
         diag_packs: parking_lot::Mutex<std::collections::BTreeMap<usize, Pack>>,
@@ -556,42 +551,39 @@ pub fn check(
         build_config: ValidBuildConfig,
     }
 
-    let build_check_ctx = build_config.map(|(build_config, rx)| {
+    let build_check_ctx = build.map(|build_config| {
         // Make all paths reported in build diagnostics be relative to cargo_home
-        let cargo_home = home::cargo_home()
-            .map_err(|err| {
-                log::error!("unable to locate $CARGO_HOME: {err}");
-                err
+        let cargo_home = crate::cargo_home()
+            .inspect_err(|error| {
+                log::error!("{error:#}");
             })
-            .ok()
-            .and_then(|pb| {
-                crate::PathBuf::from_path_buf(pb)
-                    .map_err(|pb| {
-                        log::error!("$CARGO_HOME path '{}' is not utf-8", pb.display());
-                    })
-                    .ok()
-            });
+            .ok();
 
         // Keep track of the individual crate configs so we can emit warnings
         // if they're configured but not actually used
         let bypasses =
             parking_lot::Mutex::<BitVec>::new(BitVec::repeat(false, build_config.bypass.len()));
 
-        (
-            BuildCheckCtx {
-                cargo_home,
-                bypasses,
-                diag_packs: parking_lot::Mutex::new(std::collections::BTreeMap::new()),
-                build_config,
-            },
-            rx,
-        )
+        BuildCheckCtx {
+            cargo_home,
+            bypasses,
+            diag_packs: parking_lot::Mutex::new(std::collections::BTreeMap::new()),
+            build_config,
+        }
     });
+
+    let mut replacements = None;
 
     let mut ws_duplicate_packs = Vec::new();
 
     rayon::scope(|scope| {
-        scope.spawn(|_| {
+        if let Some(rctx) = std_replacements.map(replacements::ReplacementCtx::new) {
+            scope.spawn(|_s| {
+                replacements = rctx.process(ctx.krates);
+            });
+        }
+
+        scope.spawn(|scope| {
             let last = ctx.krates.len() - 1;
 
             for (i, krate) in ctx.krates.krates().enumerate() {
@@ -599,11 +591,19 @@ pub fn check(
 
                 // Check if the crate has been explicitly banned
                 if let Some(matches) = denied_ids.matches(krate) {
+                    let is_workspace_member = workspace_members.contains(&krate.id);
+
                     for rm in matches {
                         let ban_cfg = CfgCoord {
                             file: file_id,
                             span: rm.specr.spec.name.span,
                         };
+
+                        // If allow_workspace is enabled and this is a workspace member,
+                        // skip the ban (workspace members take precedence over explicit bans)
+                        if is_workspace_member && allow_workspace {
+                            continue;
+                        }
 
                         // The crate is banned, but it might be allowed if it's
                         // wrapped by one or more particular crates
@@ -663,6 +663,8 @@ pub fn check(
                 if !allowed.0.is_empty() {
                     // Since only allowing specific crates is pretty draconian,
                     // also emit which allow filters actually passed each crate
+                    let is_workspace_member = workspace_members.contains(&krate.id);
+
                     match allowed.matches(krate) {
                         Some(matches) => {
                             for rm in matches {
@@ -673,7 +675,13 @@ pub fn check(
                             }
                         }
                         None => {
-                            pack.push(diags::NotAllowed { krate });
+                            // If allow_workspace is enabled and this is a workspace member,
+                            // automatically allow it without requiring explicit configuration
+                            if is_workspace_member && allow_workspace {
+                                // Workspace member is automatically allowed, no diagnostic needed
+                            } else {
+                                pack.push(diags::NotAllowed { krate });
+                            }
                         }
                     }
                 }
@@ -945,10 +953,15 @@ pub fn check(
 
                                     // Wildcards are allowed for path or git dependencies, if the krate
                                     // is private, or it's only a dev-dependency
+                                    //
+                                    // OR
+                                    //
+                                    // The dependency is actually for the same crate, extremely rare but allowed by cargo
                                     if allow_wildcard_paths
                                         && !mdep.krate.is_registry()
                                         && (is_private
                                             || mdep.dep.kind == DependencyKind::Development)
+                                        || mdep.krate.id == krate.id
                                     {
                                         continue;
                                     }
@@ -1013,33 +1026,26 @@ pub fn check(
                     report_duplicates(&mut multi_detector, &mut sink);
                 }
 
-                tx.push(i, krate, pack);
-            }
+                if let Some(build_ctx) = &build_check_ctx {
+                    scope.spawn(move |_s| {
+                        if let Some(bcc) = check_build(
+                            ctx.cfg.file_id,
+                            &build_ctx.build_config,
+                            build_ctx.cargo_home.as_deref(),
+                            krate,
+                            ctx.krates,
+                            &mut pack,
+                        ) {
+                            build_ctx.bypasses.lock().set(bcc, true);
+                        }
 
-            drop(tx);
-        });
-
-        scope.spawn(|scope| {
-            let Some((build_ctx, rx)) = &build_check_ctx else {
-                return;
-            };
-            while let Ok((index, krate, mut pack)) = rx.recv() {
-                scope.spawn(move |_s| {
-                    if let Some(bcc) = check_build(
-                        ctx.cfg.file_id,
-                        &build_ctx.build_config,
-                        build_ctx.cargo_home.as_deref(),
-                        krate,
-                        ctx.krates,
-                        &mut pack,
-                    ) {
-                        build_ctx.bypasses.lock().set(bcc, true);
-                    }
-
-                    if !pack.is_empty() {
-                        build_ctx.diag_packs.lock().insert(index, pack);
-                    }
-                });
+                        if !pack.is_empty() {
+                            build_ctx.diag_packs.lock().insert(i, pack);
+                        }
+                    });
+                } else if !pack.is_empty() {
+                    sink.push(pack);
+                }
             }
         });
 
@@ -1059,7 +1065,7 @@ pub fn check(
         }
     });
 
-    if let Some((bcc, _)) = build_check_ctx {
+    if let Some(bcc) = build_check_ctx {
         for bp in bcc.diag_packs.into_inner().into_values() {
             sink.push(bp);
         }
@@ -1069,7 +1075,7 @@ pub fn check(
             .bypasses
             .into_inner()
             .into_iter()
-            .zip(bcc.build_config.bypass.into_iter())
+            .zip(bcc.build_config.bypass)
             .filter_map(|(hit, ve)| if !hit { Some(ve) } else { None })
         {
             pack.push(diags::UnmatchedBypass {
@@ -1100,7 +1106,7 @@ pub fn check(
 
     let mut pack = Pack::new(Check::Bans);
 
-    for (hit, skip) in skip_hit.into_iter().zip(skipped.0.into_iter()) {
+    for (hit, skip) in skip_hit.into_iter().zip(skipped.0) {
         if !hit {
             pack.push(diags::UnmatchedSkip { skip_cfg: &skip });
         } else if multi_detector
@@ -1127,6 +1133,10 @@ pub fn check(
     }
 
     sink.push(pack);
+
+    if let Some(replacements) = replacements {
+        replacements.emit_diagnostics(ctx.krates, &mut sink, file_id, ctx.colorize);
+    }
 }
 
 pub fn check_build(
@@ -1204,18 +1214,21 @@ pub fn check_build(
         .find_map(|(i, ae)| crate::match_krate(krate, &ae.spec).then_some((i, ae)))
         .unzip();
 
+    let build_script_path = krate.targets.iter().find_map(|t| {
+        t.kind
+            .contains(&TargetKind::CustomBuild)
+            .then_some(&t.src_path)
+    });
+
     // If the build script hashes to the same value and required features are not actually
     // set on the crate, we can skip it
     if let Some(kc) = krate_config
         && let Some(bsc) = &kc.build_script
-        && let Some(path) = krate
-            .targets
-            .iter()
-            .find_map(|t| (t.name == "build-script-build").then_some(&t.src_path))
+        && let Some(path) = build_script_path
     {
         let root = &krate.manifest_path.parent().unwrap();
-        match validate_file_checksum(path, &bsc.value) {
-            Ok(_) => {
+        match bsc.value.validate_checksum(path) {
+            Ok((true, _)) => {
                 pack.push(diags::ChecksumMatch {
                     path: diags::HomePath { path, root, home },
                     checksum: bsc,
@@ -1253,12 +1266,23 @@ pub fn check_build(
                     file_id,
                 });
             }
+            Ok((false, calculated)) => {
+                pack.push(diags::ChecksumMismatch {
+                    path: diags::HomePath { path, root, home },
+                    checksum: bsc,
+                    severity: Some(Severity::Warning),
+                    error: None,
+                    calculated: Some(calculated),
+                    file_id,
+                });
+            }
             Err(err) => {
                 pack.push(diags::ChecksumMismatch {
                     path: diags::HomePath { path, root, home },
                     checksum: bsc,
                     severity: Some(Severity::Warning),
-                    error: format!("build script failed checksum: {err:#}"),
+                    error: Some(format!("build script failed checksum: {err:#}")),
+                    calculated: None,
                     file_id,
                 });
             }
@@ -1266,7 +1290,17 @@ pub fn check_build(
     }
 
     if !build_script_allowed {
-        pack.push(diags::BuildScriptNotAllowed { krate });
+        let build_script = build_script_path.and_then(|path| {
+            let root = krate.manifest_path.parent().unwrap();
+            cfg::Checksum::checksum_file(path)
+                .ok()
+                .map(|checksum| (diags::HomePath { path, root, home }, checksum))
+        });
+
+        pack.push(diags::BuildScriptNotAllowed {
+            krate,
+            build_script,
+        });
         return kc_index;
     }
 
@@ -1437,7 +1471,7 @@ pub fn check_build(
             drop(tx);
         },
         || {
-            // Note that since we ship off the checksum validation to a threads the order is
+            // Note that since we ship off the checksum validation to threads the order is
             // not guaranteed, so we just put them in a btreemap so they are consistently
             // ordered and don't trigger test errors or cause confusing output for users
             let checksum_diags = parking_lot::Mutex::new(std::collections::BTreeMap::new());
@@ -1446,28 +1480,36 @@ pub fn check_build(
                     s.spawn(|_s| {
                         let absolute_path = path;
                         let path = &absolute_path;
-                        if let Err(err) = validate_file_checksum(&absolute_path, &checksum.value) {
-                            let diag: Diag = diags::ChecksumMismatch {
-                                path: diags::HomePath { path, root, home },
-                                checksum,
-                                severity: None,
-                                error: format!("{err:#}"),
-                                file_id,
-                            }
-                            .into();
 
-                            checksum_diags.lock().insert(absolute_path, diag);
-                        } else {
-                            let diag: Diag = diags::ChecksumMatch {
+                        let diag: Diag = match checksum.value.validate_checksum(&absolute_path) {
+                            Ok((true, _)) => diags::ChecksumMatch {
                                 path: diags::HomePath { path, root, home },
                                 checksum,
                                 severity: None,
                                 file_id,
                             }
-                            .into();
+                            .into(),
+                            Ok((false, calculated)) => diags::ChecksumMismatch {
+                                path: diags::HomePath { path, root, home },
+                                checksum,
+                                severity: None,
+                                error: None,
+                                calculated: Some(calculated),
+                                file_id,
+                            }
+                            .into(),
+                            Err(error) => diags::ChecksumMismatch {
+                                path: diags::HomePath { path, root, home },
+                                checksum,
+                                severity: None,
+                                error: Some(format!("{error:#}")),
+                                calculated: None,
+                                file_id,
+                            }
+                            .into(),
+                        };
 
-                            checksum_diags.lock().insert(absolute_path, diag);
-                        }
+                        checksum_diags.lock().insert(absolute_path, diag);
                     });
                 }
             });
@@ -1564,46 +1606,36 @@ fn check_is_executable(
     }
 }
 
-/// Validates the buffer matches the expected SHA-256 checksum
-fn validate_checksum(
-    mut stream: impl std::io::Read,
-    expected: &cfg::Checksum,
-) -> anyhow::Result<()> {
-    let digest = {
-        let mut dc = ring::digest::Context::new(&ring::digest::SHA256);
-        let mut chunk = [0; 8 * 1024];
-        loop {
-            let read = stream.read(&mut chunk)?;
-            if read == 0 {
-                break;
+impl cfg::Checksum {
+    fn checksum_file(path: &crate::Path) -> anyhow::Result<Self> {
+        use std::io::Read;
+
+        let mut file = std::fs::File::open(path)?;
+
+        let digest = {
+            let mut dc = ring::digest::Context::new(&ring::digest::SHA256);
+            let mut chunk = [0; 8 * 1024];
+            loop {
+                let read = file.read(&mut chunk)?;
+                if read == 0 {
+                    break;
+                }
+                dc.update(&chunk[..read]);
             }
-            dc.update(&chunk[..read]);
-        }
-        dc.finish()
-    };
+            dc.finish()
+        };
 
-    let digest = digest.as_ref();
-    if digest != expected.0 {
-        let mut hs = [0u8; 64];
-        const CHARS: &[u8] = b"0123456789abcdef";
-        for (i, &byte) in digest.iter().enumerate() {
-            let i = i * 2;
-            hs[i] = CHARS[(byte >> 4) as usize];
-            hs[i + 1] = CHARS[(byte & 0xf) as usize];
-        }
-
-        let digest = std::str::from_utf8(&hs).unwrap();
-        anyhow::bail!("checksum mismatch, calculated {digest}");
+        let mut bytes = [0; 32];
+        bytes.copy_from_slice(digest.as_ref());
+        Ok(Self(bytes))
     }
 
-    Ok(())
-}
-
-#[inline]
-fn validate_file_checksum(path: &crate::Path, expected: &cfg::Checksum) -> anyhow::Result<()> {
-    let file = std::fs::File::open(path)?;
-    validate_checksum(std::io::BufReader::new(file), expected)?;
-    Ok(())
+    /// Validates the files matches the expected SHA-256 checksum
+    #[inline]
+    fn validate_checksum(&self, path: &crate::Path) -> anyhow::Result<(bool, Self)> {
+        let actual = Self::checksum_file(path)?;
+        Ok((actual == *self, actual))
+    }
 }
 
 fn check_workspace_duplicates(

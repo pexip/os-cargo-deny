@@ -1,0 +1,72 @@
+---
+source: tests/advisories.rs
+expression: "advisories_by_kind(diags, \"unsound\")"
+---
+[
+  {
+    "fields": {
+      "advisory": {
+        "aliases": [
+          "CVE-2019-25010",
+          "CVE-2020-25575",
+          "GHSA-jq66-xh47-j9f3",
+          "GHSA-r98r-j25q-rmpr"
+        ],
+        "categories": [],
+        "collection": "crates",
+        "cvss": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+        "date": "2019-11-13",
+        "description": "Safe Rust code can implement malfunctioning `__private_get_type_id__` and cause\ntype confusion when downcasting, which is an undefined behavior.\n\nUsers who derive `Fail` trait are not affected.",
+        "expect-deleted": false,
+        "id": "RUSTSEC-2019-0036",
+        "informational": "unsound",
+        "keywords": [
+          "unsound"
+        ],
+        "license": "CC0-1.0",
+        "package": "failure",
+        "references": [],
+        "related": [],
+        "source": null,
+        "title": "Type confusion if __private_get_type_id__ is overridden",
+        "url": "https://github.com/rust-lang-nursery/failure/issues/336",
+        "withdrawn": null
+      },
+      "code": "unsound",
+      "graphs": [
+        {
+          "Krate": {
+            "name": "failure",
+            "version": "0.1.8"
+          },
+          "parents": [
+            {
+              "Krate": {
+                "name": "advisories",
+                "version": "0.1.0"
+              }
+            }
+          ]
+        }
+      ],
+      "labels": [
+        {
+          "column": 1,
+          "line": 30,
+          "message": "unsound advisory detected",
+          "span": "failure 0.1.8 registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "message": "Type confusion if __private_get_type_id__ is overridden",
+      "notes": [
+        "ID: RUSTSEC-2019-0036",
+        "Advisory: https://rustsec.org/advisories/RUSTSEC-2019-0036",
+        "Safe Rust code can implement malfunctioning `__private_get_type_id__` and cause\ntype confusion when downcasting, which is an undefined behavior.\n\nUsers who derive `Fail` trait are not affected.",
+        "Announcement: https://github.com/rust-lang-nursery/failure/issues/336",
+        "Solution: No safe upgrade is available!"
+      ],
+      "severity": "error"
+    },
+    "type": "diagnostic"
+  }
+]

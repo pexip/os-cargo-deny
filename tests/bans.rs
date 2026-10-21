@@ -118,6 +118,18 @@ allow-wildcard-paths = true
     insta::assert_json_snapshot!(diags);
 }
 
+/// Ensures that wildcard paths are allowed for self-referents
+#[test]
+fn allow_path_wildcards_for_self() {
+    let diags = gather_bans(
+        func_name!(),
+        KrateGather::new("wildcards/self"),
+        r"wildcards = 'deny'",
+    );
+
+    insta::assert_json_snapshot!(diags);
+}
+
 /// Ensures that individual workspace crates can be ignored
 #[test]
 fn ignores_unpublished_crates() {
@@ -353,4 +365,164 @@ skip = [
     );
 
     insta::assert_json_snapshot!(diags);
+}
+
+/// Tests the allow-workspace feature that automatically allows workspace members
+/// even when using deny-by-default policy
+#[test]
+fn allow_workspace_members() {
+    let diags = gather_bans(
+        func_name!(),
+        KrateGather::new("workspace_allow"),
+        r#"
+# Deny all external dependencies by default
+deny = [{ name = "*" }]
+
+# Allow specific external dependencies
+allow = [{ name = "serde" }]
+
+# Automatically allow workspace members
+allow-workspace = true
+"#,
+    );
+
+    insta::assert_json_snapshot!(diags);
+}
+
+/// Tests that allow-workspace=false (default) still blocks workspace members
+/// when using deny-by-default policy
+#[test]
+fn deny_workspace_members_by_default() {
+    let diags = gather_bans(
+        func_name!(),
+        KrateGather::new("workspace_allow"),
+        r#"
+# Deny all external dependencies by default
+deny = [{ name = "*" }]
+
+# Allow specific external dependencies
+allow = [{ name = "serde" }]
+
+# allow-workspace defaults to false, so workspace members should be blocked
+"#,
+    );
+
+    insta::assert_json_snapshot!(diags);
+}
+
+/// Tests that workspace members take precedence over explicit bans
+/// when allow-workspace=true
+#[test]
+fn workspace_members_override_explicit_bans() {
+    let diags = gather_bans(
+        func_name!(),
+        KrateGather::new("workspace_allow"),
+        r#"
+# Explicitly ban workspace members
+deny = [
+    { name = "test-app" },
+    { name = "test-lib" }
+]
+
+# But allow them via workspace setting (should take precedence)
+allow-workspace = true
+"#,
+    );
+
+    insta::assert_json_snapshot!(diags);
+}
+
+#[allow(clippy::disallowed_types)]
+fn sync_replacements() {
+    static SYNC_REPLACEMENTS: std::sync::Once = std::sync::Once::new();
+    SYNC_REPLACEMENTS.call_once(|| {
+        if let Err(error) = cargo_deny::bans::replacements::ReplacementCtx::sync() {
+            panic!("failed to sync replacements! - {error:#}");
+        }
+    });
+}
+
+macro_rules! snapshot_name {
+    ($suffix:literal) => {
+        format!("{}__{}", func_name!().replace("::", "_"), $suffix)
+    };
+}
+
+/// Tests that std replacements are correctly shown based on the configured scope
+#[test]
+fn std_replacements_by_scope() {
+    use cargo_deny::cfg::Scope;
+
+    sync_replacements();
+
+    for scope in [Scope::None, Scope::All, Scope::Transitive, Scope::Workspace] {
+        for iscope in [Scope::None, Scope::All, Scope::Transitive, Scope::Workspace] {
+            let diags = gather_bans(
+                func_name!(),
+                KrateGather::new("std-replacements"),
+                format!(
+                    "[std-replacements]\nscope = '{}'\nignore-rust-version = '{}'\n",
+                    scope.as_str(),
+                    iscope.as_str()
+                ),
+            );
+
+            insta::assert_json_snapshot!(
+                format!(
+                    "{}__{}__{}",
+                    func_name!().replace("::", "_"),
+                    scope.as_str(),
+                    iscope.as_str()
+                ),
+                diags
+            );
+        }
+    }
+}
+
+/// Tests that std replacements can be ignored
+#[test]
+fn std_replacement_ignore() {
+    sync_replacements();
+
+    let diags = gather_bans(
+        func_name!(),
+        KrateGather::new("std-replacements"),
+        "[std-replacements]\nscope = 'all'\nignore = ['no-std-net']\n",
+    );
+
+    insta::assert_json_snapshot!(snapshot_name!("hit"), diags);
+
+    // the cfg-if replacement is ignored by default since the crate that depends on it is on an ancient rust-version
+    let diags = gather_bans(
+        func_name!(),
+        KrateGather::new("std-replacements"),
+        "[std-replacements]\nscope = 'all'\nignore = ['no-std-net', 'cfg-if']\n",
+    );
+
+    insta::assert_json_snapshot!(snapshot_name!("no-hit"), diags);
+}
+
+/// Tests that the std replacements lint can be downgraded from the default
+#[test]
+fn std_replacement_downgrades() {
+    sync_replacements();
+
+    let diags = gather_bans(
+        func_name!(),
+        KrateGather::new("std-replacements"),
+        "[std-replacements]\nlevel = 'allow'\n",
+    );
+
+    insta::assert_json_snapshot!(snapshot_name!("defaults"), diags);
+
+    // We don't declare a rust-version in the root manifest, so it triggers by default, but by specifying an explicit
+    // version the lint is no longer triggered because of the version the API was replaced in was much later than 1.0 (obviously)
+    let diags = gather_bans(
+        func_name!(),
+        KrateGather::new("std-replacements"),
+        "[std-replacements]\nlevel = 'allow'\nrust-version = '1.0'\n",
+    );
+
+    insta::assert_json_snapshot!(snapshot_name!("fallback-rust-version"), diags);
 }

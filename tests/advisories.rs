@@ -1,9 +1,12 @@
 use cargo_deny::{
-    Krates,
+    Krates, SerializeAdvisory as SA,
     advisories::{self, cfg},
     field_eq, func_name,
     test_utils::{self as tu},
 };
+use std::time::Duration;
+
+const TEN_THOUSAND_DAYS: Duration = Duration::from_secs(10000 * 24 * 60 * 60);
 
 struct TestCtx {
     dbs: advisories::DbSet,
@@ -39,7 +42,7 @@ fn load() -> TestCtx {
         advisories::DbSet::load(
             "tests/advisory-db".into(),
             vec![],
-            advisories::Fetch::Disallow(time::Duration::days(10000)),
+            advisories::Fetch::Disallow(TEN_THOUSAND_DAYS),
         )
         .unwrap()
     };
@@ -60,6 +63,13 @@ fn find_by_code<'a>(diags: &'a [serde_json::Value], code: &str) -> Option<&'a se
     })
 }
 
+fn advisories_by_kind(v: Vec<serde_json::Value>, kind: &str) -> Vec<serde_json::Value> {
+    let kind = Some(kind);
+    v.into_iter()
+        .filter(|diag| diag.pointer("/fields/code").and_then(|code| code.as_str()) == kind)
+        .collect()
+}
+
 /// Validates we emit diagnostics when a vulnerability advisory is detected
 #[test]
 fn detects_vulnerabilities() {
@@ -73,6 +83,7 @@ fn detects_vulnerabilities() {
                 ctx,
                 &dbs,
                 Option::<advisories::NoneReporter>::None,
+                SA::Json,
                 None,
                 tx,
             );
@@ -88,14 +99,6 @@ fn detects_vulnerabilities() {
 fn detects_unmaintained() {
     let TestCtx { dbs, krates } = load();
 
-    fn unmaintained_advisories(v: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
-        v.into_iter()
-            .filter(|diag| {
-                diag.pointer("/fields/code").and_then(|code| code.as_str()) == Some("unmaintained")
-            })
-            .collect()
-    }
-
     {
         let cfg = tu::Config::new("");
 
@@ -105,12 +108,13 @@ fn detects_unmaintained() {
                     ctx,
                     &dbs,
                     Option::<advisories::NoneReporter>::None,
+                    SA::Json,
                     None,
                     tx,
                 );
             });
 
-        insta::assert_json_snapshot!(unmaintained_advisories(diags));
+        insta::assert_json_snapshot!(advisories_by_kind(diags, "unmaintained"));
     }
 
     {
@@ -122,12 +126,13 @@ fn detects_unmaintained() {
                     ctx,
                     &dbs,
                     Option::<advisories::NoneReporter>::None,
+                    SA::Json,
                     None,
                     tx,
                 );
             });
 
-        insta::assert_json_snapshot!(unmaintained_advisories(diags));
+        insta::assert_json_snapshot!(advisories_by_kind(diags, "unmaintained"));
     }
 
     {
@@ -139,12 +144,13 @@ fn detects_unmaintained() {
                     ctx,
                     &dbs,
                     Option::<advisories::NoneReporter>::None,
+                    SA::Json,
                     None,
                     tx,
                 );
             });
 
-        insta::assert_json_snapshot!(unmaintained_advisories(diags));
+        insta::assert_json_snapshot!(advisories_by_kind(diags, "unmaintained"));
     }
 
     {
@@ -156,12 +162,13 @@ fn detects_unmaintained() {
                     ctx,
                     &dbs,
                     Option::<advisories::NoneReporter>::None,
+                    SA::Json,
                     None,
                     tx,
                 );
             });
 
-        insta::assert_json_snapshot!(unmaintained_advisories(diags));
+        insta::assert_json_snapshot!(advisories_by_kind(diags, "unmaintained"));
     }
 }
 
@@ -170,21 +177,77 @@ fn detects_unmaintained() {
 fn detects_unsound() {
     let TestCtx { dbs, krates } = load();
 
-    let cfg = tu::Config::new("");
+    {
+        let cfg = tu::Config::new("");
 
-    let diags =
-        tu::gather_diagnostics::<cfg::Config, _, _>(&krates, func_name!(), cfg, |ctx, tx| {
-            advisories::check(
-                ctx,
-                &dbs,
-                Option::<advisories::NoneReporter>::None,
-                None,
-                tx,
-            );
-        });
+        let diags =
+            tu::gather_diagnostics::<cfg::Config, _, _>(&krates, func_name!(), cfg, |ctx, tx| {
+                advisories::check(
+                    ctx,
+                    &dbs,
+                    Option::<advisories::NoneReporter>::None,
+                    SA::Json,
+                    None,
+                    tx,
+                );
+            });
 
-    let unsound_diag = find_by_code(&diags, "RUSTSEC-2019-0036").unwrap();
-    insta::assert_json_snapshot!(unsound_diag);
+        insta::assert_json_snapshot!(advisories_by_kind(diags, "unsound"));
+    }
+
+    {
+        let cfg = tu::Config::new("unsound = 'transitive'");
+
+        let diags =
+            tu::gather_diagnostics::<cfg::Config, _, _>(&krates, func_name!(), cfg, |ctx, tx| {
+                advisories::check(
+                    ctx,
+                    &dbs,
+                    Option::<advisories::NoneReporter>::None,
+                    SA::Json,
+                    None,
+                    tx,
+                );
+            });
+
+        insta::assert_json_snapshot!(advisories_by_kind(diags, "unsound"));
+    }
+
+    {
+        let cfg = tu::Config::new("unsound = 'workspace'");
+
+        let diags =
+            tu::gather_diagnostics::<cfg::Config, _, _>(&krates, func_name!(), cfg, |ctx, tx| {
+                advisories::check(
+                    ctx,
+                    &dbs,
+                    Option::<advisories::NoneReporter>::None,
+                    SA::Json,
+                    None,
+                    tx,
+                );
+            });
+
+        insta::assert_json_snapshot!(advisories_by_kind(diags, "unsound"));
+    }
+
+    {
+        let cfg = tu::Config::new("unsound = 'none'");
+
+        let diags =
+            tu::gather_diagnostics::<cfg::Config, _, _>(&krates, func_name!(), cfg, |ctx, tx| {
+                advisories::check(
+                    ctx,
+                    &dbs,
+                    Option::<advisories::NoneReporter>::None,
+                    SA::Json,
+                    None,
+                    tx,
+                );
+            });
+
+        insta::assert_json_snapshot!(advisories_by_kind(diags, "unsound"));
+    }
 }
 
 /// Validates that advisories that are ignored still have diagnostics emitted for
@@ -208,6 +271,7 @@ ignore = [
                 ctx,
                 &dbs,
                 Option::<advisories::NoneReporter>::None,
+                SA::Json,
                 None,
                 tx,
             );
@@ -262,7 +326,10 @@ fn detects_yanked() {
         .unwrap();
 
     let indices = advisories::Indices::load(&krates, cargo_home.to_owned().try_into().unwrap());
-    let dbs = advisories::DbSet { dbs: Vec::new() };
+    let dbs = advisories::DbSet {
+        dbs: Vec::new(),
+        lock: None,
+    };
 
     {
         let cfg = tu::Config::new("yanked = 'deny'");
@@ -278,6 +345,7 @@ fn detects_yanked() {
                     ctx,
                     &dbs,
                     Option::<advisories::NoneReporter>::None,
+                    SA::No,
                     Some(indices),
                     tx,
                 );
@@ -314,6 +382,7 @@ ignore = [
                     ctx,
                     &dbs,
                     Option::<advisories::NoneReporter>::None,
+                    SA::No,
                     Some(indices),
                     tx,
                 );
@@ -369,6 +438,7 @@ fn warns_on_index_failures() {
                 ctx,
                 &dbs,
                 Option::<advisories::NoneReporter>::None,
+                SA::No,
                 Some(indices),
                 tx,
             );
@@ -398,6 +468,7 @@ fn warns_on_ignored_and_withdrawn() {
                 ctx,
                 &dbs,
                 Option::<advisories::NoneReporter>::None,
+                SA::No,
                 None,
                 tx,
             );
@@ -428,7 +499,7 @@ fn fails_on_stale_advisory_database() {
         advisories::DbSet::load(
             "tests/advisory-db".into(),
             vec![],
-            advisories::Fetch::Disallow(time::Duration::seconds(0)),
+            advisories::Fetch::Disallow(Duration::from_secs(0)),
         )
         .unwrap_err()
         .to_string()
@@ -464,32 +535,29 @@ fn do_open(td: &tempfile::TempDir, f: Fetch) -> advisories::AdvisoryDb {
 }
 
 fn validate(adb: &advisories::AdvisoryDb, rev: &str, ids: &[(&str, &str)]) {
-    let repo = gix::open(&adb.path).expect("failed to open repo");
-    assert_eq!(repo.head_commit().unwrap().id.to_hex().to_string(), rev);
+    let mut cmd = std::process::Command::new("git");
+    let output = cmd
+        .arg("-C")
+        .arg(&adb.path)
+        .args(["show", "-s", "--format=%H", "HEAD"])
+        .stdout(std::process::Stdio::piped())
+        .output()
+        .expect("failed to run git");
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("not utf8").trim(),
+        rev
+    );
 
     for (id, date) in ids {
-        let adv = adb.db.get(&id.parse().unwrap()).expect("unable to find id");
-        assert_eq!(adv.date().as_str(), *date);
+        let adv = adb.db.get(id).expect("unable to find id");
+        assert_eq!(adv.advisory.date.to_string(), *date);
     }
 
     assert!(
-        (time::OffsetDateTime::now_utc() - adb.fetch_time) < std::time::Duration::from_secs(60)
-    );
-}
-
-/// Validates we can clone an advisory database with gix
-#[test]
-fn clones_with_gix() {
-    let td = temp_dir();
-    let db = do_open(&td, Fetch::Allow);
-
-    validate(
-        &db,
-        EXPECTED_TWO,
-        &[
-            (EXPECTED_ONE_ID, EXPECTED_ONE_DATE),
-            (EXPECTED_TWO_ID, EXPECTED_TWO_DATE),
-        ],
+        (jiff::Timestamp::now() - adb.fetch_time)
+            .total(jiff::Unit::Second)
+            .unwrap()
+            < 60.
     );
 }
 
@@ -553,7 +621,7 @@ fn validate_fetch(fetch: Fetch) {
     )
     .expect("failed to write config");
 
-    let db = do_open(&td, Fetch::Disallow(time::Duration::days(10000)));
+    let db = do_open(&td, Fetch::Disallow(TEN_THOUSAND_DAYS));
     validate(&db, EXPECTED_ONE, &[(EXPECTED_ONE_ID, EXPECTED_ONE_DATE)]);
 
     let db = do_open(&td, fetch);
@@ -601,15 +669,12 @@ fn crates_io_source_replacement() {
     // for crates.io
     let lrd = temp_dir();
     {
-        use tame_index::{external::reqwest, index::local};
+        use tame_index::index::local;
 
-        let sparse = tame_index::index::RemoteSparseIndex::new(
-            tame_index::SparseIndex::new(tame_index::IndexLocation::new(
-                tame_index::IndexUrl::CratesIoSparse,
-            ))
-            .unwrap(),
-            reqwest::blocking::Client::new(),
-        );
+        let sparse = tame_index::SparseIndex::new(tame_index::IndexLocation::new(
+            tame_index::IndexUrl::CratesIoSparse,
+        ))
+        .unwrap();
 
         // Use a separate even more temporary cargo home for the gathering of the
         // crates we want to write to the temp local registry, so that we don't
@@ -658,11 +723,9 @@ fn crates_io_source_replacement() {
             })
             .collect();
 
-        let client =
-            local::builder::Client::build(reqwest::blocking::ClientBuilder::new()).unwrap();
-
         let lrb = local::LocalRegistryBuilder::create(to_path(&lrd).unwrap().to_owned()).unwrap();
-        let config = sparse.index.index_config().unwrap();
+        let config = sparse.index_config().unwrap();
+        let agent = ureq::agent();
 
         index_krates.into_par_iter().for_each(|ip| {
             let iv = ip
@@ -671,7 +734,14 @@ fn crates_io_source_replacement() {
                 .iter()
                 .find(|iv| iv.version.parse::<cargo_deny::Version>().unwrap() == ip.version)
                 .unwrap();
-            let vk = local::ValidKrate::download(&client, &config, iv).unwrap();
+
+            let url =
+                config.download_url(iv.name.as_str().try_into().unwrap(), iv.version.as_ref());
+
+            let res = agent.get(url).call().unwrap();
+            let body = res.into_body().read_to_vec().unwrap();
+
+            let vk = local::ValidKrate::validate(body, iv).unwrap();
 
             lrb.insert(&ip.ik, &[vk]).unwrap();
         });
@@ -741,7 +811,10 @@ fn crates_io_source_replacement() {
 
     let cfg = tu::Config::new("yanked = 'deny'");
 
-    let dbs = advisories::DbSet { dbs: Vec::new() };
+    let dbs = advisories::DbSet {
+        dbs: Vec::new(),
+        lock: None,
+    };
 
     let diags =
         tu::gather_diagnostics::<cfg::Config, _, _>(&krates, func_name!(), cfg, |ctx, tx| {
@@ -749,6 +822,7 @@ fn crates_io_source_replacement() {
                 ctx,
                 &dbs,
                 Option::<advisories::NoneReporter>::None,
+                SA::No,
                 Some(indices),
                 tx,
             );
@@ -859,6 +933,7 @@ fn crates_io_source_replacement() {
                 ctx,
                 &dbs,
                 Option::<advisories::NoneReporter>::None,
+                SA::No,
                 Some(indices),
                 tx,
             );
@@ -882,4 +957,74 @@ fn crates_io_source_replacement() {
         .collect();
 
     insta::assert_json_snapshot!(diags);
+}
+
+/// Ensures that advisory DB loading ignores advisories with a placeholder ID as well as duplicates
+#[test]
+fn ignores_placeholders_and_duplicates() {
+    let td = tempfile::tempdir().unwrap();
+    let mut td = cargo_deny::Path::from_path(td.path()).unwrap().to_owned();
+
+    const DUPLICATE: &str = "RUSTSEC-1234-5678";
+
+    fn make_fake(p: &mut cargo_deny::PathBuf, name: &str) {
+        fn write(p: &cargo_deny::Path, id: &str, name: &str) {
+            use std::io::Write;
+            let mut f = std::fs::File::create_new(p).unwrap();
+
+            macro_rules! w {
+                ($c:expr) => {
+                    #[allow(clippy::string_lit_as_bytes)]
+                    {
+                        f.write_all($c.as_bytes()).unwrap();
+                    }
+                };
+            }
+
+            w!("```toml\n[advisory]\nid = \"");
+            w!(id);
+            w!("\"\npackage = \"");
+            w!(name);
+            w!("\"\ndate = \"1234-12-25\"\n");
+            w!("url = \"https://github.com/RustSec/advisory-db\"\n");
+            w!("[versions]\n");
+            w!(r#"patched = [">= 0.103.13, < 0.104.0-alpha.1", ">= 0.104.0-alpha.7"]"#);
+            w!("\n```\n\n# Much title, very descript\n\n");
+            w!("blah blah blah\nblah\n\n- blah1\n- blah2\n");
+        }
+
+        p.push(name);
+        std::fs::create_dir_all(&p).unwrap();
+
+        const PLACEHOLDER: &str = "RUSTSEC-0000-0000";
+
+        p.push(PLACEHOLDER);
+        p.set_extension("md");
+        write(p, PLACEHOLDER, name);
+
+        p.pop();
+        p.push(DUPLICATE);
+        p.set_extension("md");
+        write(p, DUPLICATE, name);
+
+        p.pop();
+        p.pop();
+    }
+
+    td.push("crates");
+
+    make_fake(&mut td, "fake0");
+    make_fake(&mut td, "fake_1");
+    make_fake(&mut td, "fake-2");
+
+    td.pop();
+
+    let db = cargo_deny::advisories::db::Database::open(&td).unwrap();
+
+    let adv = db.advisories.get(DUPLICATE).unwrap();
+    assert_eq!(
+        adv.advisory.advisory.url,
+        Some("https://github.com/RustSec/advisory-db")
+    );
+    assert_eq!(adv.advisory.advisory.id, DUPLICATE);
 }

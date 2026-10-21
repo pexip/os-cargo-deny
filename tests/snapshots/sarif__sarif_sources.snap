@@ -9,7 +9,20 @@ expression: s
       "results": [
         {
           "level": "error",
-          "locations": [],
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "{CWD}/tests/test_data/sources/Cargo.toml"
+                },
+                "region": {
+                  "byteLength": 0,
+                  "byteOffset": 0,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
           "message": {
             "text": "detected 'git' source not explicitly allowed"
           },
@@ -30,15 +43,19 @@ expression: s
                 "region": {
                   "byteLength": 9,
                   "byteOffset": 134,
-                  "message": "no crate source fell under this organization",
-                  "snippet": "bizzlepop",
+                  "message": {
+                    "text": "no crate source fell under this organization"
+                  },
+                  "snippet": {
+                    "text": "bizzlepop"
+                  },
                   "startLine": 5
                 }
               }
             }
           ],
           "message": {
-            "text": "allowed 'github.com' organization  was not encountered"
+            "text": "allowed 'github.com' organization was not encountered"
           },
           "partialFingerprints": {
             "cargo-deny/id": "s:unmatched-organization",
