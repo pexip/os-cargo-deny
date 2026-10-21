@@ -223,7 +223,7 @@ impl ReplacementData {
                 let name = read_str(this.1);
                 this.0 = name.to_owned();
                 let start = this.1.as_ptr().byte_add(1 + name.len());
-                this.1 = std::slice::from_raw_parts(start, next.offset_from_unsigned(start));
+                this.1 = std::slice::from_raw_parts(start, next.offset_from(start) as usize);
             }
 
             let this = entries.last_mut().unwrap();

@@ -56,9 +56,7 @@ pub fn check(ctx: crate::CheckCtx<'_, ValidConfig>, sink: impl Into<ErrorSink>) 
             (ctx.cfg.unknown_registry, "registry")
         } else if let Some(spec) = source.git_spec() {
             // Ensure the git source has at least the minimum specification
-            if let Some((min, cfg_coord)) = &min_git_spec
-                && spec < *min
-            {
+            if let Some((min, cfg_coord)) = min_git_spec.as_ref().filter(|(min, _)| spec < *min) {
                 pack.push(diags::BelowMinimumRequiredSpec {
                     src_label: sl.get_or_insert_with(label),
                     min_spec: *min,

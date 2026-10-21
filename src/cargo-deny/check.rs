@@ -321,8 +321,10 @@ pub(crate) fn cmd(
         }
 
         if check_bans
-            && let Some(stdr) = &bans.std_replacements
-            && !matches!(stdr.scope, cargo_deny::cfg::Scope::None)
+            && bans
+                .std_replacements
+                .as_ref()
+                .is_some_and(|stdr| !matches!(stdr.scope, cargo_deny::cfg::Scope::None))
             && !offline
         {
             s.spawn(|_| {

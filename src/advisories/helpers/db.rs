@@ -471,12 +471,11 @@ pub fn find_unaffected_req<'v>(
                     // the components with a '.', so we can't rely on that for splitting.
                     let vs = vers.pre.as_str();
                     let cs = comp.pre.as_str();
-                    if let Some((vi, ci)) = vs
+                    let digits = vs
                         .find(|c: char| c.is_ascii_digit())
                         .zip(cs.find(|c: char| c.is_ascii_digit()))
-                        && vi == ci
-                        && vs[..vi] == cs[..ci]
-                    {
+                        .filter(|&(vi, ci)| vi == ci && vs[..vi] == cs[..ci]);
+                    if let Some((vi, ci)) = digits {
                         let vn = vs[vi..].chars().fold(0u32, |acc, c| {
                             if c.is_ascii_digit() {
                                 acc * 10 + c as u32 - '0' as u32
@@ -605,15 +604,11 @@ pub fn find_unaffected_req<'v>(
                             return false;
                         }
 
-                        if let Some(minor) = comp.minor
-                            && minor != vers.minor
-                        {
+                        if comp.minor.is_some_and(|minor| minor != vers.minor) {
                             return false;
                         }
 
-                        if let Some(patch) = comp.patch
-                            && patch != vers.patch
-                        {
+                        if let Some(patch) = comp.patch.filter(|&patch| patch != vers.patch) {
                             return patch < vers.patch;
                         }
 

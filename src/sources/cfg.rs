@@ -169,8 +169,9 @@ impl cfg::UnvalidatedConfig for Config {
             let astr = aurl.as_ref();
             let mut skip = 0;
 
-            if let Some(start_scheme) = astr.find("://")
-                && let Some(i) = astr[..start_scheme].find('+')
+            if let Some(i) = astr
+                .find("://")
+                .and_then(|start_scheme| astr[..start_scheme].find('+'))
             {
                 skip = i + 1;
             }

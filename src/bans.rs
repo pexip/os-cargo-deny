@@ -704,9 +704,7 @@ pub fn check(
                     None
                 };
 
-                if let Some(ll) = default_lint_level
-                    && ll.value == LintLevel::Warn
-                {
+                if let Some(ll) = default_lint_level.filter(|ll| ll.value == LintLevel::Warn) {
                     pack.push(diags::DefaultFeatureEnabled {
                         krate,
                         level: ll,
@@ -726,8 +724,8 @@ pub fn check(
                                 .filter_map(|ef| {
                                     if !feature_bans.allow.value.iter().any(|af| &af.value == ef) {
                                         if ef == "default"
-                                            && let Some(ll) = default_lint_level
-                                            && ll.value != LintLevel::Deny
+                                            && default_lint_level
+                                                .is_some_and(|ll| ll.value != LintLevel::Deny)
                                         {
                                             return None;
                                         }
@@ -834,15 +832,15 @@ pub fn check(
                                 // the global span, otherwise the crate level setting,
                                 // if the default feature was banned explicitly, takes
                                 // precedence
-                                if let Some(ll) = default_lint_level
-                                    && ll.value == LintLevel::Deny
-                                    && !feature_bans
-                                        .allow
-                                        .value
-                                        .iter()
-                                        .any(|d| d.value == "default")
-                                    && !feature_bans.deny.iter().any(|d| d.value == "default")
-                                {
+                                if let Some(ll) = default_lint_level.filter(|ll| {
+                                    ll.value == LintLevel::Deny
+                                        && !feature_bans
+                                            .allow
+                                            .value
+                                            .iter()
+                                            .any(|d| d.value == "default")
+                                        && !feature_bans.deny.iter().any(|d| d.value == "default")
+                                }) {
                                     pack.push(diags::DefaultFeatureEnabled {
                                         krate,
                                         level: ll,
@@ -889,9 +887,7 @@ pub fn check(
                             }
                         }
                     }
-                } else if let Some(ll) = default_lint_level
-                    && ll.value == LintLevel::Deny
-                {
+                } else if let Some(ll) = default_lint_level.filter(|ll| ll.value == LintLevel::Deny) {
                     pack.push(diags::DefaultFeatureEnabled {
                         krate,
                         level: ll,
@@ -1051,8 +1047,9 @@ pub fn check(
 
         // Check the workspace to detect dependencies that are used more than once
         // but don't use a shared [workspace.[dev-/build-]dependencies] declaration
-        if let Some(ws_deps) = &workspace_dependencies
-            && ws_deps.duplicates != LintLevel::Allow
+        if let Some(ws_deps) = workspace_dependencies
+            .as_ref()
+            .filter(|ws_deps| ws_deps.duplicates != LintLevel::Allow)
         {
             scope.spawn(|_| {
                 check_workspace_duplicates(
@@ -1091,11 +1088,14 @@ pub fn check(
         sink.push(pack);
     }
 
-    if let Some(ws_deps) = workspace_dependencies
-        && ws_deps.unused != LintLevel::Allow
-        && let Some(id) = krate_spans
-            .workspace_id
-            .filter(|_id| !krate_spans.unused_workspace_deps.is_empty())
+    if let Some((ws_deps, id)) = workspace_dependencies
+        .filter(|ws_deps| ws_deps.unused != LintLevel::Allow)
+        .and_then(|ws_deps| {
+            let id = krate_spans
+                .workspace_id
+                .filter(|_id| !krate_spans.unused_workspace_deps.is_empty())?;
+            Some((ws_deps, id))
+        })
     {
         sink.push(diags::UnusedWorkspaceDependencies {
             id,
@@ -1222,10 +1222,10 @@ pub fn check_build(
 
     // If the build script hashes to the same value and required features are not actually
     // set on the crate, we can skip it
-    if let Some(kc) = krate_config
-        && let Some(bsc) = &kc.build_script
-        && let Some(path) = build_script_path
-    {
+    if let Some((kc, bsc, path)) = krate_config.and_then(|kc| {
+        let bsc = kc.build_script.as_ref()?;
+        Some((kc, bsc, build_script_path?))
+    }) {
         let root = &krate.manifest_path.parent().unwrap();
         match bsc.value.validate_checksum(path) {
             Ok((true, _)) => {
@@ -1372,9 +1372,7 @@ pub fn check_build(
                             &kc.allow[i]
                         });
 
-                    if let Some(ae) = ae
-                        && ae.checksum.is_none()
-                    {
+                    if let Some(ae) = ae.filter(|ae| ae.checksum.is_none()) {
                         pack.push(diags::ExplicitPathAllowance {
                             allowed: ae,
                             file_id,
@@ -1383,8 +1381,10 @@ pub fn check_build(
                     }
 
                     // Check if the path matches an allowed glob pattern
-                    if let Some(ag) = &kc.allow_globs
-                        && let Some(globs) = ag.matches(&candidate, &mut matches)
+                    if let Some(globs) = kc
+                        .allow_globs
+                        .as_ref()
+                        .and_then(|ag| ag.matches(&candidate, &mut matches))
                     {
                         for &i in &matches {
                             glob_hit.set(i, true);
@@ -1454,7 +1454,7 @@ pub fn check_build(
                     .into_iter()
                     .zip(vgs.patterns.iter())
                     .filter_map(|(hit, gp)| {
-                        if !hit && let cfg::GlobPattern::User(gp) = gp {
+                        if let (false, cfg::GlobPattern::User(gp)) = (hit, gp) {
                             return Some(gp);
                         }
 

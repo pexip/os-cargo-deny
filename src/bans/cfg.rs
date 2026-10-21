@@ -642,9 +642,10 @@ impl crate::cfg::UnvalidatedConfig for Config {
                     let dmv = extended.deny_multiple_versions;
                     let wrappers = extended.wrappers;
 
-                    if let Some((dmv, wrappers)) = dmv.as_ref().zip(wrappers.as_ref())
-                        && dmv.value
-                        && !wrappers.value.is_empty()
+                    if let Some((dmv, wrappers)) = dmv
+                        .as_ref()
+                        .zip(wrappers.as_ref())
+                        .filter(|(dmv, wrappers)| dmv.value && !wrappers.value.is_empty())
                     {
                         ctx.push(
                                 Diagnostic::error()
