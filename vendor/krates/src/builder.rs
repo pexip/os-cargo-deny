@@ -722,10 +722,10 @@ impl Builder {
                 // specified a particular crate in a workspace, so we'll only use
                 // that single root for the entire graph rather than a root for each
                 // workspace member crate
-                if !self.workspace
-                    && let Some(rkid) = &root
-                {
-                    roots.insert(rkid);
+                if !self.workspace {
+                    if let Some(rkid) = &root {
+                        roots.insert(rkid);
+                    }
                 }
 
                 if roots.is_empty() {
@@ -1737,15 +1737,14 @@ impl Builder {
                         .iter()
                         .enumerate()
                         .find_map(|(i, n)| {
-                            if let crate::Node::Feature { krate_index, name } = &n.weight
-                                && let crate::Node::Krate { id, .. } = &graph[*krate_index]
-                                && id == kid
-                                && name == feature
-                            {
-                                Some(crate::NodeId::new(i + krates_end))
-                            } else {
-                                None
+                            if let crate::Node::Feature { krate_index, name } = &n.weight {
+                                if let crate::Node::Krate { id, .. } = &graph[*krate_index] {
+                                    if id == kid && name == feature {
+                                        return Some(crate::NodeId::new(i + krates_end));
+                                    }
+                                }
                             }
+                            None
                         });
 
                 node_id.unwrap_or_else(|| {

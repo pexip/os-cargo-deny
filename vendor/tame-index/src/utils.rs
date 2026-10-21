@@ -9,9 +9,7 @@ pub mod flock;
 /// `.cargo` or `CARGO_HOME`
 #[inline]
 pub fn cargo_home() -> Result<crate::PathBuf, crate::Error> {
-    let chome = if let Some(home) = std::env::var_os("CARGO_HOME")
-        && !home.is_empty()
-    {
+    let chome = if let Some(home) = std::env::var_os("CARGO_HOME").filter(|h| !h.is_empty()) {
         let home = std::path::PathBuf::from(home);
         if home.is_absolute() {
             home
