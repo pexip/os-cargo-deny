@@ -1,0 +1,36 @@
+# cargo-about configuration used by debian/gen-copyright to determine the
+# licences of the vendored crates. See debian/README.source.
+
+# Licences we accept for the crates built into the package. cargo-about fails
+# (with --fail) if a crate's licence cannot be satisfied by this list, which
+# flags new licences for review when the vendored crates are updated.
+accepted = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "MIT",
+  "0BSD",
+  "BSD-3-Clause",
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]
+
+# Every Linux architecture we may build for. Crates only used on other
+# platforms are still covered in debian/copyright, using their Cargo.toml.
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "x86_64-unknown-linux-musl",
+  "aarch64-unknown-linux-gnu",
+  "aarch64-unknown-linux-musl",
+  "i686-unknown-linux-gnu",
+  "armv7-unknown-linux-gnueabihf",
+  "arm-unknown-linux-gnueabi",
+  "riscv64gc-unknown-linux-gnu",
+  "powerpc64le-unknown-linux-gnu",
+  "s390x-unknown-linux-gnu",
+  "loongarch64-unknown-linux-gnu",
+]
+
+workarounds = ["ring", "rustls"]

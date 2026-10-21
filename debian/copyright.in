@@ -1,0 +1,77 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: cargo-deny
+Upstream-Contact: https://github.com/EmbarkStudios/cargo-deny/issues
+Source: https://github.com/EmbarkStudios/cargo-deny
+Comment:
+ The vendor/ directory contains the crates.io dependencies of cargo-deny,
+ produced by `cargo vendor`. The stanzas for vendor/ are generated from
+ debian/copyright.in by debian/gen-copyright; see debian/README.source.
+ Edit debian/copyright.in rather than this file.
+
+Files: *
+Copyright: 2019-2026 Embark Studios
+License: Expat or Apache-2.0
+
+Files: debian/*
+Copyright: 2024-2026 Pexip AS
+License: Expat or Apache-2.0
+
+Files: examples/14_license_detection/LICENSE-*
+Copyright: 2019-2026 Embark Studios
+License: Expat or Apache-2.0
+Comment: Licence texts (AGPL-3.0, FreeBSD, MIT variants) used as test
+ fixtures for cargo-deny's licence detection; they are not the licence of
+ any code in this package.
+
+Files: tests/snapshots/advisories__*.snap
+Copyright: 2019-2026 Embark Studios
+           RustSec advisory database contributors
+License: Expat or Apache-2.0, and CC0-1.0
+Comment: Test snapshots that include advisory text from the RustSec advisory
+ database, which is released under CC0-1.0.
+
+@VENDORED@
+
+Files: vendor/regex-syntax/src/unicode_tables/*
+Copyright: 2014 The Rust Project Developers
+           1991-2018 Unicode, Inc
+License: Expat or Apache-2.0, and Unicode-DFS-2016
+Comment: Tables generated from the Unicode Character Database.
+
+Files: vendor/ring/src/polyfill/once_cell/*
+Copyright: Aleksey Kladov <aleksey.kladov@gmail.com>
+License: Expat or Apache-2.0
+Comment: Copied from the once_cell crate.
+
+Files: vendor/ring/src/polyfill/slice.rs
+Copyright: ring contributors
+License: Expat
+
+Files: vendor/spdx/src/text/*
+Copyright: Embark <opensource@embark-studios.com>
+License: Apache-2.0
+Comment: Reference texts of the licences and exceptions in the SPDX License
+ List, used as data for licence detection. They are not the licence of any
+ code in this package; each text is subject to its own terms.
+
+Files: vendor/zstd-sys/LICENSE.BSD-3-Clause
+       vendor/zstd-sys/src/bindings_*.rs
+Copyright: Meta Platforms, Inc. and affiliates
+License: BSD-3-clause
+Comment: Bindings generated from the zstd C API, under zstd's BSD licence.
+
+Files: vendor/zstd-sys/zstd/*
+Copyright: Meta Platforms, Inc. and affiliates
+License: BSD-3-clause or GPL-2
+Comment: Bundled copy of the Zstandard C library.
+
+Files: vendor/zstd-sys/zstd/lib/legacy/zstd_v0*.c
+Copyright: Meta Platforms, Inc. and affiliates
+           2013-2015 Yann Collet
+License: BSD-3-clause or GPL-2, and BSD-2-clause
+Comment: Legacy decoders also include BSD-2-clause licensed FSE/xxHash code.
+
+Files: vendor/zstd-sys/zstd/lib/dictBuilder/divsufsort.*
+Copyright: 2003-2008 Yuta Mori
+License: Expat
+Comment: From libdivsufsort-lite.

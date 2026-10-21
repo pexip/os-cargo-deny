@@ -1,0 +1,44 @@
+cargo-deny for PexOS
+====================
+
+Vendored dependencies
+---------------------
+
+The crates.io dependencies are vendored in vendor/ and the build uses them
+via .cargo/config.toml. After importing a new upstream version (or changing
+Cargo.lock), refresh them with:
+
+    cargo vendor --locked vendor
+
+Some vendored crates are patched to build with the Rust version in PexOS;
+see the git history for "patch vendored" commits, and update the patched
+files' entries in the crate's .cargo-checksum.json.
+
+debian/copyright
+----------------
+
+The vendor/ stanzas of debian/copyright are generated; edit
+debian/copyright.in (header, upstream and per-file exceptions) instead.
+Regenerate after any change to vendor/:
+
+    cargo install --locked --features cli cargo-about
+    cargo about generate --frozen --all-features --fail --format json \
+        -c debian/about.toml -o /tmp/about.json
+    debian/gen-copyright /tmp/about.json > debian/copyright
+
+cargo-about resolves and verifies the licences of the crates used on Linux
+(see debian/about.toml); --fail stops if a licence is unknown or not in the
+accepted list. Crates only used on other platforms take their licence from
+Cargo.toml. gen-copyright fails if it meets a licence it has no Debian name
+or licence text for.
+
+cargo-about only looks at each crate's declared licence and licence files,
+so check for embedded code under other licences (e.g. bundled C sources) and
+record it in debian/copyright.in. The licenserecon package helps:
+
+    lrc
+
+Expected lrc differences are licence texts used as data or test fixtures
+(vendor/spdx/src/text/, examples/14_license_detection/), Unicode-3.0 being
+reported as Unicode-DFS-2016, and target-lexicon's Apache-2.0 with LLVM
+exception licence file being reported as Apache-2.0.

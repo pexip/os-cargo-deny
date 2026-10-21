@@ -1,0 +1,274 @@
+#!/usr/bin/python3
+"""Generate debian/copyright for the vendored crates.
+
+Usage: debian/gen-copyright ABOUT_JSON > debian/copyright
+
+ABOUT_JSON is the output of:
+
+    cargo about generate --frozen --all-features --fail --format json \
+        -c debian/about.toml -o ABOUT_JSON
+
+Every directory in vendor/ gets a "Files: vendor/<dir>/*" stanza. Licences
+come from cargo-about where it covers the crate (i.e. the crate is used when
+building for Linux), otherwise from the crate's Cargo.toml. Copyright lines
+come from the crate's licence files, falling back to its authors.
+
+The stanzas are inserted into debian/copyright.in at the @VENDORED@ line,
+followed by a paragraph for every licence used in the file.
+"""
+
+import json
+import re
+import sys
+import textwrap
+import tomllib
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+VENDOR = ROOT / "vendor"
+TEMPLATE = ROOT / "debian" / "copyright.in"
+SPDX_TEXTS = VENDOR / "spdx" / "src" / "text"
+
+# SPDX licence identifiers -> Debian short names.
+DEBIAN_NAMES = {
+    "0BSD": "0BSD",
+    "Apache-2.0": "Apache-2.0",
+    "BSD-2-Clause": "BSD-2-clause",
+    "BSD-3-Clause": "BSD-3-clause",
+    "BSL-1.0": "BSL-1.0",
+    "CC0-1.0": "CC0-1.0",
+    "CDLA-Permissive-2.0": "CDLA-Permissive-2.0",
+    "GPL-2.0-only": "GPL-2",
+    "ISC": "ISC",
+    "LGPL-2.1-or-later": "LGPL-2.1+",
+    "MIT": "Expat",
+    "MPL-2.0": "MPL-2.0",
+    "Unicode-3.0": "Unicode-3.0",
+    "Unicode-DFS-2016": "Unicode-DFS-2016",
+    "Unlicense": "Unlicense",
+    "Zlib": "Zlib",
+}
+SPDX_IDS = {v: k for k, v in DEBIAN_NAMES.items()}
+
+# SPDX exception identifiers -> Debian exception names ("<lic> with <name> exception").
+DEBIAN_EXCEPTIONS = {"LLVM-exception": "LLVM"}
+
+# Licences shipped in /usr/share/common-licenses on Debian systems.
+COMMON_LICENSES = {
+    "Apache-2.0": "Apache-2.0",
+    "BSL-1.0": "BSL-1.0",
+    "CC0-1.0": "CC0-1.0",
+    "GPL-2": "GPL-2",
+    "LGPL-2.1+": "LGPL-2.1",
+    "MPL-2.0": "MPL-2.0",
+}
+
+LICENSE_FILE_RE = re.compile(r"^(licen[cs]e|copying|copyright|notice|unlicense)", re.I)
+COPYRIGHT_RE = re.compile(r"^[\s/*#;!-]*Copyright\b\s*(.*)$")
+PLACEHOLDER_RE = re.compile(r"[\[{<](yyyy|year|name|owner|copyright holder)|\byear\b|\bnotice\b", re.I)
+
+
+def die(msg):
+    sys.exit(f"gen-copyright: {msg}")
+
+
+# --- SPDX expression handling ---------------------------------------------
+
+def tokenize(expr):
+    # Old-style "MIT/Apache-2.0" means "MIT OR Apache-2.0".
+    expr = expr.replace("/", " OR ")
+    return re.findall(r"\(|\)|[^\s()]+", expr)
+
+
+def parse(tokens):
+    """Parse an SPDX expression into ("or"|"and", [children]) or a leaf string."""
+
+    def parse_or(pos):
+        node, pos = parse_and(pos)
+        children = [node]
+        while pos < len(tokens) and tokens[pos].upper() == "OR":
+            node, pos = parse_and(pos + 1)
+            children.append(node)
+        return (children[0] if len(children) == 1 else ("or", children)), pos
+
+    def parse_and(pos):
+        node, pos = parse_atom(pos)
+        children = [node]
+        while pos < len(tokens) and tokens[pos].upper() == "AND":
+            node, pos = parse_atom(pos + 1)
+            children.append(node)
+        return (children[0] if len(children) == 1 else ("and", children)), pos
+
+    def parse_atom(pos):
+        if tokens[pos] == "(":
+            node, pos = parse_or(pos + 1)
+            if tokens[pos] != ")":
+                raise ValueError("unbalanced parentheses")
+            return node, pos + 1
+        lic = tokens[pos]
+        if pos + 2 < len(tokens) and tokens[pos + 1].upper() == "WITH":
+            return f"{lic} WITH {tokens[pos + 2]}", pos + 3
+        return lic, pos + 1
+
+    node, pos = parse_or(0)
+    if pos != len(tokens):
+        raise ValueError(f"unexpected token {tokens[pos]!r}")
+    return node
+
+
+def debian_leaf(leaf):
+    lic, _, exc = leaf.partition(" WITH ")
+    if lic not in DEBIAN_NAMES:
+        die(f"no Debian name for SPDX licence {lic!r}; add it to DEBIAN_NAMES")
+    name = DEBIAN_NAMES[lic]
+    if exc:
+        if exc not in DEBIAN_EXCEPTIONS:
+            die(f"no Debian name for SPDX exception {exc!r}; add it to DEBIAN_EXCEPTIONS")
+        name = f"{name} with {DEBIAN_EXCEPTIONS[exc]} exception"
+    return name
+
+
+def render(node):
+    """Render as a DEP-5 licence expression ("and" binds tighter than "or";
+    ", and" groups a preceding "or" list)."""
+    if isinstance(node, str):
+        return debian_leaf(node)
+    op, children = node
+    parts = [render(c) for c in children]
+    if op == "or":
+        return " or ".join(parts)
+    # "and": an "or" operand needs the comma form to keep its grouping.
+    if any(not isinstance(c, str) and c[0] == "or" for c in children):
+        return ", and ".join(parts)
+    return " and ".join(parts)
+
+
+def to_debian(expr):
+    try:
+        return render(parse(tokenize(expr)))
+    except (ValueError, IndexError) as e:
+        die(f"cannot parse licence expression {expr!r}: {e}")
+
+
+# --- Per-crate data -------------------------------------------------------
+
+def copyright_lines(crate_dir, pkg):
+    found = []
+    for f in sorted(crate_dir.iterdir()):
+        if not f.is_file() or not LICENSE_FILE_RE.match(f.name):
+            continue
+        for line in f.read_text(errors="replace").splitlines():
+            m = COPYRIGHT_RE.match(line)
+            if not m:
+                continue
+            text = re.sub(r"^(\(c\)|©)\s*", "", m.group(1).strip(), flags=re.I)
+            text = re.sub(r"\s*\.?\s*All rights reserved\.?$", "", text, flags=re.I)
+            if PLACEHOLDER_RE.search(text):
+                continue
+            text = re.sub(r"\[([^\]]*)\]", r"\1", text)  # filled-in "[yyyy] [name]" templates
+            text = text.strip(" .,")
+            if re.fullmatch(r"[0-9 ,-]+", text or ""):
+                # Only a year: the holders are the crate's authors.
+                text = f"{text} {', '.join(pkg.get('authors') or [pkg['name'] + ' contributors'])}"
+            if text and text not in found:
+                found.append(text)
+    return found
+
+
+def crate_stanzas(about_json):
+    about = {}
+    for crate in json.loads(Path(about_json).read_text())["crates"]:
+        manifest = Path(crate["package"]["manifest_path"])
+        if manifest.parent.parent.resolve() == VENDOR.resolve():
+            about[manifest.parent.name] = crate["license"]
+
+    stanzas = []
+    for crate_dir in sorted(p for p in VENDOR.iterdir() if p.is_dir()):
+        pkg = tomllib.loads((crate_dir / "Cargo.toml").read_text())["package"]
+        comment = None
+        expr = about.get(crate_dir.name)
+        if expr is None:
+            expr = pkg.get("license")
+            comment = "Not used when building for Linux; licence taken from Cargo.toml."
+        if not expr:
+            die(f"vendor/{crate_dir.name}: no licence expression")
+
+        holders = copyright_lines(crate_dir, pkg) or pkg.get("authors") or [f"{pkg['name']} contributors"]
+        lines = [f"Files: vendor/{crate_dir.name}/*", f"Copyright: {holders[0]}"]
+        lines += [f"           {h}" for h in holders[1:]]
+        lines.append(f"License: {to_debian(expr)}")
+        if comment:
+            lines.append(f"Comment: {comment}")
+        stanzas.append("\n".join(lines))
+    return stanzas
+
+
+# --- Licence paragraphs ---------------------------------------------------
+
+def spdx_text(kind, spdx_id):
+    path = SPDX_TEXTS / kind / spdx_id
+    if not path.exists():
+        die(f"no SPDX text for {spdx_id!r} at {path.relative_to(ROOT)}")
+    text = path.read_text()
+    text = re.sub(r'^r#*"|"#*\s*$', "", text)
+    # Drop title lines and copyright lines; the holders are in the Files stanzas.
+    out = []
+    for line in text.strip().splitlines():
+        if not out and (line.strip() == "" or line.strip().rstrip(":").endswith("License")):
+            continue
+        if COPYRIGHT_RE.match(line):
+            continue
+        out.append(line)
+    return "\n".join(out).strip()
+
+
+def format_body(text):
+    body = []
+    for para in re.split(r"\n\s*\n", text):
+        if body:
+            body.append(" .")
+        lines = textwrap.dedent(para).strip("\n").splitlines()
+        # Re-wrap long unwrapped paragraphs; keep pre-wrapped ones as they are.
+        if any(len(l) > 79 for l in lines):
+            lines = textwrap.wrap(" ".join(l.strip() for l in lines), 78)
+        body += [" " + l.rstrip() if l.strip() else " ." for l in lines]
+    return "\n".join(body)
+
+
+def license_paragraph(name):
+    base, _, exc = name.partition(" with ")
+    if base in COMMON_LICENSES:
+        text = (f"On Debian systems, the complete text of the {base} licence can be\n"
+                f"found in '/usr/share/common-licenses/{COMMON_LICENSES[base]}'.")
+    elif base in SPDX_IDS:
+        text = spdx_text("licenses", SPDX_IDS[base])
+    else:
+        die(f"don't know where to find the text of licence {base!r}")
+    if exc:
+        exc_id = {v: k for k, v in DEBIAN_EXCEPTIONS.items()}[exc.removesuffix(" exception")]
+        text += "\n\n" + spdx_text("exceptions", exc_id)
+    return f"License: {name}\n{format_body(text)}"
+
+
+def licence_names(text):
+    names = set()
+    for m in re.finditer(r"^License: (.+)$", text, re.M):
+        for part in re.split(r",?\s+(?:or|and)\s+", m.group(1)):
+            names.add(part.strip())
+    return names
+
+
+def main():
+    if len(sys.argv) != 2:
+        die("usage: debian/gen-copyright ABOUT_JSON > debian/copyright")
+    template = TEMPLATE.read_text()
+    if "@VENDORED@" not in template:
+        die("debian/copyright.in has no @VENDORED@ line")
+    out = template.replace("@VENDORED@", "\n\n".join(crate_stanzas(sys.argv[1]))).rstrip() + "\n"
+    for name in sorted(licence_names(out), key=str.lower):
+        out += "\n" + license_paragraph(name) + "\n"
+    sys.stdout.write(out)
+
+
+if __name__ == "__main__":
+    main()
