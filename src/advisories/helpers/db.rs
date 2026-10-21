@@ -1,21 +1,24 @@
-use crate::{Krate, Krates, Path, PathBuf};
+#![allow(clippy::question_mark)]
+
+use crate::{Krate, Krates, Path, PathBuf, advisories::model};
 use anyhow::Context as _;
 use log::{debug, info};
-pub use rustsec::{Database, advisory::Id};
+use rayon::{
+    iter::{ParallelBridge, ParallelIterator},
+    prelude::IntoParallelRefIterator,
+};
 use std::fmt;
 use url::Url;
 
 /// The default, official, rustsec advisory database
-const DEFAULT_URL: &str = "https://github.com/RustSec/advisory-db";
-/// Refspec used to fetch updates from remote advisory databases
-const REF_SPEC: &str = "+HEAD:refs/remotes/origin/HEAD";
+pub const DEFAULT_URL: &str = "https://github.com/RustSec/advisory-db";
 
 /// Whether the database will be fetched or not
 #[derive(Copy, Clone)]
 pub enum Fetch {
     Allow,
     AllowWithGitCli,
-    Disallow(time::Duration),
+    Disallow(std::time::Duration),
 }
 
 pub struct AdvisoryDb {
@@ -26,7 +29,64 @@ pub struct AdvisoryDb {
     /// The path to the backing repository
     pub path: PathBuf,
     /// The time of the last fetch of the db
-    pub fetch_time: time::OffsetDateTime,
+    pub fetch_time: jiff::Timestamp,
+}
+
+impl AdvisoryDb {
+    pub fn load(url: Url, root_db_path: PathBuf, fetch: Fetch) -> anyhow::Result<Self> {
+        let db_url = &url;
+        let db_path = url_to_db_path(root_db_path, db_url)?;
+
+        let fetch_start = std::time::Instant::now();
+        match fetch {
+            Fetch::Allow | Fetch::AllowWithGitCli => {
+                debug!("Fetching advisory database with git cli from '{db_url}'");
+
+                let res = crate::git::fetch_repo(db_url.as_str(), &db_path, "main").with_context(
+                    || format!("failed to fetch advisory database {db_url} with cli"),
+                )?;
+
+                log::debug!("{res} {db_url}");
+            }
+            Fetch::Disallow(_) => {
+                debug!("Opening advisory database at '{db_path}'");
+            }
+        }
+
+        // Verify that the repository is actually valid and that it is fresh
+        let fetch_time = crate::git::get_fetch_time(&db_path)?;
+
+        // Ensure that the upstream repository hasn't gone stale, ie, they've
+        // configured cargo-deny to not fetch the remote database(s), but they've
+        // failed to update the database manually
+        if let Fetch::Disallow(max_staleness) = fetch {
+            anyhow::ensure!(
+                fetch_time
+                    > jiff::Timestamp::now()
+                        .checked_sub(max_staleness)
+                        .context("unable to compute oldest allowable update timestamp")?,
+                "repository is stale (last update: {fetch_time})"
+            );
+        } else {
+            info!(
+                "advisory database {db_url} fetched in {:?}",
+                fetch_start.elapsed()
+            );
+        }
+
+        debug!("loading advisory database from {db_path}");
+
+        let res = Database::open(&db_path).context("failed to load advisory database");
+
+        debug!("finished loading advisory database from {db_path}");
+
+        res.map(|db| Self {
+            url,
+            db,
+            path: db_path,
+            fetch_time,
+        })
+    }
 }
 
 impl fmt::Debug for AdvisoryDb {
@@ -42,9 +102,9 @@ impl fmt::Debug for AdvisoryDb {
 /// in many different databases.
 ///
 /// [`Database`]: https://docs.rs/rustsec/latest/rustsec/database/struct.Database.html
-#[derive(Debug)]
 pub struct DbSet {
     pub dbs: Vec<AdvisoryDb>,
+    pub lock: Option<tame_index::utils::flock::FileLock>,
 }
 
 impl DbSet {
@@ -57,7 +117,7 @@ impl DbSet {
         // Acquire an exclusive lock, even if we aren't fetching, to prevent
         // other cargo-deny processes from performing mutations
         let lock_path = root.join("db.lock");
-        let _lock = tame_index::utils::flock::LockOptions::new(&lock_path)
+        let lock = tame_index::utils::flock::LockOptions::new(&lock_path)
             .exclusive(false)
             .lock(|path| {
                 log::info!("waiting on advisory db lock '{path}'");
@@ -68,11 +128,12 @@ impl DbSet {
         use rayon::prelude::*;
         let mut dbs = Vec::with_capacity(urls.len());
         urls.into_par_iter()
-            .map(|url| load_db(url, root.clone(), fetch))
+            .map(|url| AdvisoryDb::load(url, root.clone(), fetch))
             .collect_into_vec(&mut dbs);
 
         Ok(Self {
             dbs: dbs.into_iter().collect::<Result<Vec<_>, _>>()?,
+            lock: Some(lock),
         })
     }
 
@@ -82,8 +143,16 @@ impl DbSet {
     }
 
     #[inline]
-    pub fn has_advisory(&self, id: &Id) -> bool {
-        self.dbs.iter().any(|adb| adb.db.get(id).is_some())
+    pub fn has_advisory(&self, id: &str) -> bool {
+        self.dbs
+            .iter()
+            .any(|adb| adb.db.advisories.contains_key(id))
+    }
+}
+
+impl fmt::Debug for DbSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DbSet").field("dbs", &self.dbs).finish()
     }
 }
 
@@ -106,441 +175,8 @@ fn url_to_db_path(mut db_path: PathBuf, url: &Url) -> anyhow::Result<PathBuf> {
     Ok(db_path)
 }
 
-fn load_db(url: Url, root_db_path: PathBuf, fetch: Fetch) -> anyhow::Result<AdvisoryDb> {
-    let db_url = &url;
-    let db_path = url_to_db_path(root_db_path, db_url)?;
-
-    let fetch_start = std::time::Instant::now();
-    match fetch {
-        Fetch::Allow => {
-            debug!("Fetching advisory database from '{db_url}'");
-            fetch_via_gix(db_url, &db_path)
-                .with_context(|| format!("failed to fetch advisory database {db_url}"))?;
-        }
-        Fetch::AllowWithGitCli => {
-            debug!("Fetching advisory database with git cli from '{db_url}'");
-
-            fetch_via_cli(db_url.as_str(), &db_path)
-                .with_context(|| format!("failed to fetch advisory database {db_url} with cli"))?;
-        }
-        Fetch::Disallow(_) => {
-            debug!("Opening advisory database at '{db_path}'");
-        }
-    }
-
-    // Verify that the repository is actually valid and that it is fresh
-    let repo = gix::open(&db_path).context("failed to open advisory database")?;
-
-    let fetch_time = get_fetch_time(&repo)?;
-
-    // Ensure that the upstream repository hasn't gone stale, ie, they've
-    // configured cargo-deny to not fetch the remote database(s), but they've
-    // failed to update the database manually
-    if let Fetch::Disallow(max_staleness) = fetch {
-        anyhow::ensure!(
-            fetch_time
-                > time::OffsetDateTime::now_utc()
-                    .checked_sub(max_staleness)
-                    .context("unable to compute oldest allowable update timestamp")?,
-            "repository is stale (last update: {fetch_time})"
-        );
-    } else {
-        info!(
-            "advisory database {db_url} fetched in {:?}",
-            fetch_start.elapsed()
-        );
-    }
-
-    debug!("loading advisory database from {db_path}");
-
-    let res = Database::open(db_path.as_std_path()).context("failed to load advisory database");
-
-    debug!("finished loading advisory database from {db_path}");
-
-    res.map(|db| AdvisoryDb {
-        url,
-        db,
-        path: db_path,
-        fetch_time,
-    })
-}
-
-const DIR: gix::remote::Direction = gix::remote::Direction::Fetch;
-
-fn get_fetch_time(repo: &gix::Repository) -> anyhow::Result<time::OffsetDateTime> {
-    let file_timestamp = |name: &str| -> anyhow::Result<time::OffsetDateTime> {
-        let path = repo.path().join(name);
-        let attr =
-            std::fs::metadata(path).with_context(|| format!("failed to get '{name}' metadata"))?;
-        Ok(attr
-            .modified()
-            .with_context(|| format!("failed to get '{name}' modification time"))?
-            .into())
-    };
-
-    let commit_timestamp = || -> anyhow::Result<time::OffsetDateTime> {
-        let commit = repo.head_commit().context("failed to get HEAD commit")?;
-        let time = commit.time().context("failed to get HEAD commit time")?;
-
-        // Copy what gix does, unfortunately it's not public
-        // <https://github.com/Byron/gitoxide/blob/5af2cf368dcd05fe4dffbd675cffe6bafec127e7/gix-date/src/time/format.rs#L83C1-L87>
-
-        let ts = time::OffsetDateTime::from_unix_timestamp(time.seconds)
-            .context("unix timestamp for HEAD was out of range")?
-            .to_offset(
-                time::UtcOffset::from_whole_seconds(time.offset)
-                    .context("timestamp offset for HEAD was out of range")?,
-            );
-
-        Ok(ts)
-    };
-
-    let timestamp = match file_timestamp("FETCH_HEAD") {
-        Ok(ts) => ts,
-        Err(fh_err) => {
-            // If we can't get the mod time of the FETCH_HEAD file, fallback
-            // to getting the timestamp of the head commit. However, this
-            // is not as good as FETCH_HEAD mod time since a database could
-            // have been fetched within the time window, but the HEAD at that
-            // time was out of the time window
-            //
-            // However, to mitigate this problem, we use the HEAD time if it is
-            // newer than the commit time, as a fresh clone with git will NOT
-            // have the FETCH_HEAD, but the fresh clone will have just written
-            // HEAD and thus can be used as a fallback, but still defer to head
-            // if something weird has happened
-            match commit_timestamp() {
-                Ok(commit_ts) => {
-                    let file_head_ts =
-                        file_timestamp("HEAD").unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
-                    std::cmp::max(commit_ts, file_head_ts)
-                }
-                Err(hc_err) => {
-                    return Err(hc_err).context(fh_err);
-                }
-            }
-        }
-    };
-
-    Ok(timestamp)
-}
-
-/// Perform a fetch + checkout of the latest remote HEAD -> local HEAD
-///
-/// Note this function is a bit involved as, either I'm dumb and can't figure out
-/// how to do it, or else gix has support for updating HEAD and checking it out
-/// when doing a clone, but if you are performing a fetch on an existing repo
-/// ...you have to do that all yourself, which is pretty tedious
-fn fetch_and_checkout(repo: &mut gix::Repository) -> anyhow::Result<()> {
-    let mut progress = gix::progress::Discard;
-    let should_interrupt = &gix::interrupt::IS_INTERRUPTED;
-
-    {
-        let mut config = repo.config_snapshot_mut();
-        config
-            .set_raw_value(&"committer.name", "cargo-deny")
-            .context("failed to set `committer.name`")?;
-        // Note we _have_ to set the email as well, but luckily gix does not actually
-        // validate if it's a proper email or not :)
-        config
-            .set_raw_value(&"committer.email", "")
-            .context("failed to set `committer.email`")?;
-
-        let repo = config
-            .commit_auto_rollback()
-            .context("failed to set committer")?;
-
-        let mut remote = repo
-            .find_remote("origin")
-            .context("unable to find 'origin' remote")?;
-
-        remote
-            .replace_refspecs(Some(REF_SPEC), DIR)
-            .expect("valid statically known refspec");
-
-        // Perform the actual fetch
-        let outcome = remote
-            .connect(DIR)
-            .context("failed to connect to remote")?
-            .prepare_fetch(&mut progress, Default::default())
-            .context("failed to prepare fetch")?
-            .receive(&mut progress, should_interrupt)
-            .context("failed to fetch")?;
-
-        let remote_head_id = tame_index::utils::git::write_fetch_head(&repo, &outcome, &remote)
-            .context("failed to write FETCH_HEAD")?;
-
-        use gix::refs::{Target, transaction as tx};
-
-        // In all (hopefully?) cases HEAD is a symbolic reference to
-        // refs/heads/<branch> which is a peeled commit id, if that's the case
-        // we update it to the new commit id, otherwise we just set HEAD
-        // directly
-        use gix::head::Kind;
-        let edit = match repo.head()?.kind {
-            Kind::Symbolic(sref) => {
-                // Update our local HEAD to the remote HEAD
-                if let Target::Symbolic(name) = sref.target {
-                    Some(tx::RefEdit {
-                        change: tx::Change::Update {
-                            log: tx::LogChange {
-                                mode: tx::RefLog::AndReference,
-                                force_create_reflog: false,
-                                message: "".into(),
-                            },
-                            expected: tx::PreviousValue::MustExist,
-                            new: gix::refs::Target::Object(remote_head_id),
-                        },
-                        name,
-                        deref: true,
-                    })
-                } else {
-                    None
-                }
-            }
-            Kind::Unborn(_) | Kind::Detached { .. } => None,
-        };
-
-        let edit = edit.unwrap_or_else(|| tx::RefEdit {
-            change: tx::Change::Update {
-                log: tx::LogChange {
-                    mode: tx::RefLog::AndReference,
-                    force_create_reflog: false,
-                    message: "".into(),
-                },
-                expected: tx::PreviousValue::Any,
-                new: gix::refs::Target::Object(remote_head_id),
-            },
-            name: "HEAD".try_into().unwrap(),
-            deref: true,
-        });
-
-        repo.edit_reference(edit).context("failed to update HEAD")?;
-
-        // Sanity check that the local HEAD points to the same commit
-        // as the remote HEAD
-        anyhow::ensure!(
-            remote_head_id == repo.head_commit()?.id,
-            "failed to update HEAD to remote HEAD"
-        );
-    }
-
-    // Now that we've updated HEAD, do the actual checkout
-    let workdir = repo
-        .workdir()
-        .context("unable to checkout, repository is bare")?;
-    let root_tree = repo
-        .head()?
-        .try_peel_to_id()?
-        .context("unable to peel HEAD")?
-        .object()
-        .context("HEAD commit not downloaded from remote")?
-        .peel_to_tree()
-        .context("unable to peel HEAD to tree")?
-        .id;
-
-    let index = gix::index::State::from_tree(&root_tree, &repo.objects, Default::default())
-        .with_context(|| format!("failed to create index from tree '{root_tree}'"))?;
-    let mut index = gix::index::File::from_state(index, repo.index_path());
-
-    let opts = gix::worktree::state::checkout::Options {
-        destination_is_initially_empty: false,
-        overwrite_existing: true,
-        ..Default::default()
-    };
-
-    gix::worktree::state::checkout(
-        &mut index,
-        workdir,
-        repo.objects.clone().into_arc()?,
-        &progress,
-        &gix::progress::Discard,
-        should_interrupt,
-        opts,
-    )
-    .context("failed to checkout")?;
-
-    index
-        .write(Default::default())
-        .context("failed to write index")?;
-
-    Ok(())
-}
-
-fn fetch_via_gix(url: &Url, db_path: &Path) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        url.scheme() == "https" || url.scheme() == "ssh",
-        "expected '{url}' to be an `https` or `ssh` url",
-    );
-
-    // Ensure the parent directory chain is created, gix might? do it for us
-    {
-        let parent = db_path
-            .parent()
-            .with_context(|| format!("invalid directory: {db_path}"))?;
-
-        if !parent.is_dir() {
-            std::fs::create_dir_all(parent)?;
-        }
-    }
-
-    // Avoid errors in the case the directory exists but is otherwise empty.
-    // See: https://github.com/RustSec/cargo-audit/issues/32
-    // (not sure if this is needed with gix)
-    if db_path.is_dir() && std::fs::read_dir(db_path)?.next().is_none() {
-        std::fs::remove_dir(db_path)?;
-    }
-
-    let open_or_clone_repo = || -> anyhow::Result<_> {
-        let mut mapping = gix::sec::trust::Mapping::default();
-        let open_with_complete_config =
-            gix::open::Options::default().permissions(gix::open::Permissions {
-                config: gix::open::permissions::Config {
-                    // Be sure to get all configuration, some of which is only known by the git binary.
-                    // That way we are sure to see all the systems credential helpers
-                    git_binary: true,
-                    ..Default::default()
-                },
-                ..Default::default()
-            });
-
-        mapping.reduced = open_with_complete_config.clone();
-        mapping.full = open_with_complete_config.clone();
-
-        // Attempt to open the repository, if it fails for any reason,
-        // attempt to perform a fresh clone instead
-        let repo = gix::ThreadSafeRepository::discover_opts(
-            db_path,
-            gix::discover::upwards::Options::default().apply_environment(),
-            mapping,
-        )
-        .ok()
-        .map(|repo| repo.to_thread_local())
-        .filter(|repo| {
-            repo.find_remote("origin").is_ok_and(|remote| {
-                remote
-                    .url(DIR)
-                    .is_some_and(|remote_url| remote_url.to_bstring() == url.as_str())
-            })
-        })
-        .or_else(|| gix::open_opts(db_path, open_with_complete_config).ok());
-
-        let res = if let Some(repo) = repo {
-            (repo, None)
-        } else {
-            let mut progress = gix::progress::Discard;
-            let should_interrupt = &gix::interrupt::IS_INTERRUPTED;
-
-            let (mut prep_checkout, out) = gix::prepare_clone(url.as_str(), db_path)
-                .map_err(Box::new)?
-                .with_remote_name("origin")?
-                .configure_remote(|remote| Ok(remote.with_refspecs([REF_SPEC], DIR)?))
-                .fetch_then_checkout(&mut progress, should_interrupt)?;
-
-            let repo = prep_checkout
-                .main_worktree(&mut progress, should_interrupt)
-                .context("failed to checkout")?
-                .0;
-
-            (repo, Some(out))
-        };
-
-        Ok(res)
-    };
-
-    let (mut repo, fetch_outcome) = open_or_clone_repo()?;
-
-    if let Some(fetch_outcome) = fetch_outcome {
-        tame_index::utils::git::write_fetch_head(
-            &repo,
-            &fetch_outcome,
-            &repo.find_remote("origin").unwrap(),
-        )?;
-    } else {
-        // If we didn't open a fresh repo we need to perform a fetch ourselves, and
-        // do the work of updating the HEAD to point at the latest remote HEAD, which
-        // gix doesn't currently do.
-        //
-        // Gix also doesn't write the FETCH_HEAD, which we rely on for staleness
-        // checking, so we write it ourselves to keep identical logic between gix
-        // and git/git2
-        fetch_and_checkout(&mut repo)?;
-    }
-
-    repo.object_cache_size_if_unset(4 * 1024 * 1024);
-
-    Ok(())
-}
-
-fn fetch_via_cli(url: &str, db_path: &Path) -> anyhow::Result<()> {
-    use std::{fs, process::Command};
-
-    if let Some(parent) = db_path.parent() {
-        if !parent.is_dir() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!("failed to create advisory database directory {parent}")
-            })?;
-        }
-    } else {
-        anyhow::bail!("invalid directory: {db_path}");
-    }
-
-    let capture = |mut cmd: Command| -> anyhow::Result<String> {
-        cmd.stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-
-        let output = cmd
-            .spawn()
-            .context("failed to spawn git")?
-            .wait_with_output()
-            .context("failed to wait on git output")?;
-
-        if output.status.success() {
-            String::from_utf8(output.stdout)
-                .or_else(|_err| Ok("git command succeeded but gave non-utf8 output".to_owned()))
-        } else {
-            String::from_utf8(output.stderr)
-                .map_err(|_err| anyhow::anyhow!("git command failed and gave non-utf8 output"))
-        }
-    };
-
-    let run = |args: &[&str]| {
-        let mut cmd = Command::new("git");
-        cmd.arg("-C").arg(db_path);
-        cmd.args(args);
-
-        capture(cmd)
-    };
-
-    if db_path.exists() {
-        // make sure db_path is clean
-        // We don't fail if we can't reset since it _may_ still be possible to
-        // clone
-        match run(&["reset", "--hard"]) {
-            Ok(_reset) => log::debug!("reset {url}"),
-            Err(err) => log::error!("failed to reset {url}: {err}"),
-        }
-
-        // pull latest changes
-        run(&["fetch"]).context("failed to fetch latest changes")?;
-        log::debug!("fetched {url}");
-
-        // reset to the remote HEAD
-        run(&["reset", "--hard", "FETCH_HEAD"]).context("failed to reset to FETCH_HEAD")?;
-    } else {
-        // clone repository
-        let mut cmd = Command::new("git");
-        cmd.arg("clone").arg(url).arg(db_path);
-
-        capture(cmd).context("failed to clone")?;
-        log::debug!("cloned {url}");
-    }
-
-    Ok(())
-}
-
 pub struct Report<'db, 'k> {
-    pub advisories: Vec<(&'k Krate, &'db rustsec::Advisory)>,
+    pub advisories: Vec<(&'k Krate, &'db model::Advisory<'static>)>,
     /// For backwards compatibility with cargo-audit, we optionally serialize the
     /// reports to JSON and output them in addition to the normal cargo-deny
     /// diagnostics
@@ -548,150 +184,114 @@ pub struct Report<'db, 'k> {
 }
 
 impl<'db, 'k> Report<'db, 'k> {
-    pub fn generate(advisory_dbs: &'db DbSet, krates: &'k Krates, serialize_reports: bool) -> Self {
+    pub fn generate(
+        cfg: &crate::advisories::cfg::ValidConfig,
+        advisory_dbs: &'db DbSet,
+        krates: &'k Krates,
+        serialize_reports: bool,
+    ) -> Self {
         let mut serialized_reports = Vec::with_capacity(if serialize_reports {
             advisory_dbs.dbs.len()
         } else {
             0
         });
 
-        // We just use rustsec::Report directly to avoid divergence with cargo-audit,
-        // but since we operate differently we need to do shenanigans
-        let fake_lockfile = serialize_reports.then(|| {
-            // This is really gross, but the only field is private :p
-            let lfi: rustsec::report::LockfileInfo = serde_json::from_value(serde_json::json!({
-                "dependency-count": krates.len()
-            }))
-            .expect("check the definition of rustsec::report::LockfileInfo, it's been changed");
-
-            lfi
-        });
-
         let mut advisories = Vec::new();
-        use rayon::prelude::{ParallelBridge, ParallelIterator};
 
         for advisory_db in advisory_dbs.iter() {
-            // Ugh, db exposes advisories as a slice iter which rayon doesn't have an impl for :(
             let mut db_advisories: Vec<_> = advisory_db
                 .db
-                .iter()
-                .par_bridge()
-                .filter(|advisory| {
-                    if let Some(wdate) = &advisory.metadata.withdrawn {
-                        log::trace!(
-                            "ignoring advisory '{}', withdrawn {wdate}",
-                            advisory.metadata.id
-                        );
-                        return false;
-                    }
-
-                    // TODO: Support Rust std/core advisories at some point, but
-                    // AFAIK rustsec/cargo-audit doesn't support checking for them either
-                    advisory
-                        .metadata
-                        .collection
-                        .is_none_or(|c| c == rustsec::Collection::Crates)
+                .advisories
+                .par_iter()
+                .filter(|(id, entry)| {
+                    let Some(wdate) = &entry.advisory.advisory.withdrawn else {
+                        return true;
+                    };
+                    log::trace!("ignoring advisory '{id}', withdrawn {wdate}");
+                    false
                 })
-                .flat_map(|advisory| {
+                .flat_map(|(_id, entry)| {
                     krates
-                        .krates_by_name(advisory.metadata.package.as_str())
+                        .krates_by_name(entry.advisory.advisory.krate)
                         .par_bridge()
                         .filter_map(move |km| {
                             let ksrc = km.krate.source.as_ref()?;
 
                             // Validate the crate's source is the same as the advisory
-                            if !ksrc.matches_rustsec(advisory.metadata.source.as_ref()) {
+                            if !ksrc.matches_rustsec(entry.advisory.advisory.source.as_ref()) {
                                 return None;
                             }
 
                             // Ensure the crate's version is actually affected
-                            if !advisory.versions.is_vulnerable(&km.krate.version) {
+                            if !is_affected(&entry.advisory.versions, &km.krate.version) {
                                 return None;
                             }
 
-                            Some((km.krate, advisory))
+                            Some((km.krate, &entry.advisory))
                         })
                 })
                 .collect();
 
-            if let Some(lockfile) = fake_lockfile.clone() {
-                let mut warnings = std::collections::BTreeMap::<_, Vec<rustsec::Warning>>::new();
+            if serialize_reports {
+                let mut warnings =
+                    std::collections::BTreeMap::<&'static str, Vec<serde_json::Value>>::new();
                 let mut vulns = Vec::new();
 
-                for (krate, advisory) in &db_advisories {
-                    let package = rustsec::package::Package {
-                        // :(
-                        name: krate.name.parse().unwrap(),
-                        version: krate.version.clone(),
-                        source: krate.source.as_ref().map(|s| s.to_rustsec()),
+                for (krate, adv) in &db_advisories {
+                    let package = serde_json::json!({
+                        "name": krate.name,
+                        "version": krate.version,
+                        "source": krate.source.as_ref().map(|s| s.to_string()),
                         // TODO: Get this info from the lockfile
-                        checksum: None,
-                        dependencies: Vec::new(),
-                        replace: None,
-                    };
+                        "checksum": serde_json::Value::Null,
+                        "dependencies": [],
+                        "replace": serde_json::Value::Null,
+                    });
 
-                    if let Some(kind) = advisory
-                        .metadata
-                        .informational
-                        .as_ref()
-                        .and_then(|i| i.warning_kind())
-                    {
-                        let warning = rustsec::Warning {
-                            kind,
-                            package,
-                            advisory: Some(advisory.metadata.clone()),
-                            versions: Some(advisory.versions.clone()),
-                            affected: advisory.affected.clone(),
+                    if let Some(informational) = &adv.advisory.informational {
+                        let kind = match informational {
+                            model::Informational::Unmaintained => "unmaintained",
+                            model::Informational::Unsound => "unsound",
+                            model::Informational::Notice => "notice",
+                            model::Informational::Other(o) => o,
                         };
 
-                        if let Some(v) = warnings.get_mut(&kind) {
-                            v.push(warning);
-                        } else {
-                            warnings.insert(kind, vec![warning]);
-                        }
+                        warnings.entry(kind).or_default().push(serde_json::json!({
+                            "kind": kind,
+                            "package": package,
+                            "advisory": adv.advisory.to_json(),
+                            "affected": adv.affected.as_ref().map(|aff| aff.to_json()),
+                            "versions": adv.versions.to_json(),
+                        }));
                     } else {
-                        // Note we don't use new here since it takes references and just clones :p
-                        vulns.push(rustsec::Vulnerability {
-                            advisory: advisory.metadata.clone(),
-                            versions: advisory.versions.clone(),
-                            affected: advisory.affected.clone(),
-                            package,
-                        });
+                        vulns.push(serde_json::json!({
+                            "advisory": adv.advisory.to_json(),
+                            "versions": adv.versions.to_json(),
+                            "affected": adv.affected.as_ref().map(|aff| aff.to_json()),
+                            "package": package,
+                        }));
                     }
                 }
 
-                use rustsec::advisory::Informational;
-                let rep = rustsec::Report {
-                    settings: rustsec::report::Settings {
-                        // We already prune packages we don't care about, so don't filter
-                        // any here
-                        target_arch: Vec::new(),
-                        target_os: Vec::new(),
-                        // We handle the severity ourselves
-                        severity: None,
-                        // We handle the ignoring of particular advisory ids ourselves
-                        ignore: Vec::new(),
-                        informational_warnings: vec![
-                            Informational::Notice,
-                            Informational::Unmaintained,
-                            Informational::Unsound,
-                            //Informational::Other("*"),
+                serialized_reports.push(serde_json::json!({
+                    // This is extremely cargo-audit specific, we fill it out a bit lazily
+                    "settings": serde_json::json!({
+                        "target_arch": [],
+                        "target_os": [],
+                        "severity": serde_json::Value::Null,
+                        "ignore": serde_json::Value::Array(cfg.ignore.iter().map(|i| serde_json::Value::String(i.id.value.clone())).collect()),
+                        "informational_warnings": [
+                            "notice",
+                            "unmaintained",
+                            "unsound",
                         ],
+                    }),
+                    "lockfile": {
+                        "dependency-count": krates.len(),
                     },
-                    lockfile,
-                    vulnerabilities: rustsec::report::VulnerabilityInfo::new(vulns),
-                    warnings,
-                };
-
-                match serde_json::to_value(&rep) {
-                    Ok(val) => serialized_reports.push(val),
-                    Err(err) => {
-                        log::error!(
-                            "Failed to serialize report for database '{}': {err}",
-                            advisory_db.url
-                        );
-                    }
-                }
+                    "vulnerabilities": vulns,
+                    "warnings": warnings,
+                }));
             }
 
             advisories.append(&mut db_advisories);
@@ -704,7 +304,7 @@ impl<'db, 'k> Report<'db, 'k> {
             if c != std::cmp::Ordering::Equal {
                 c
             } else {
-                a.1.id().cmp(b.1.id())
+                a.1.advisory.id.cmp(b.1.advisory.id)
             }
         });
 
@@ -712,5 +312,459 @@ impl<'db, 'k> Report<'db, 'k> {
             advisories,
             serialized_reports,
         }
+    }
+}
+
+#[allow(dead_code)]
+pub struct DbEntry {
+    mmap: memmap2::Mmap,
+    path: crate::PathBuf,
+    pub advisory: model::Advisory<'static>,
+}
+
+impl DbEntry {
+    #[inline]
+    fn load(path: crate::PathBuf) -> anyhow::Result<Self> {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(false)
+            .create(false)
+            .open(&path)
+            .with_context(|| format!("failed to open {path}"))?;
+
+        #[allow(unsafe_code)]
+        // SAFETY: we lock to at least prevent other cargo-deny processes from
+        // mutating the files on disk, though of course other processes could,
+        // though the checkout directory is specific enough that that _shouldn't_
+        // be an issue in normal cases
+        let (mmap, advisory) = unsafe {
+            let mmap =
+                memmap2::Mmap::map(&file).with_context(|| format!("failed to map {path}"))?;
+
+            let advisory =
+                super::parse::parse(std::slice::from_raw_parts(mmap.as_ptr(), mmap.len()))
+                    .with_context(|| format!("failed to parse advisory from '{path}'"))?;
+
+            (mmap, advisory)
+        };
+
+        Ok(Self {
+            mmap,
+            path,
+            advisory,
+        })
+    }
+}
+
+pub struct Database {
+    pub advisories: std::collections::BTreeMap<String, DbEntry>,
+}
+
+impl Database {
+    pub fn open(path: &Path) -> anyhow::Result<Self> {
+        let root = path.join("crates");
+
+        anyhow::ensure!(root.exists(), "failed to find expected `crates` directory");
+
+        let mut advisories = std::collections::BTreeMap::<String, DbEntry>::new();
+
+        for entry in walkdir::WalkDir::new(&root) {
+            match entry {
+                Ok(entry) => {
+                    if !entry.file_type().is_file() {
+                        continue;
+                    }
+
+                    let Ok(path) = crate::PathBuf::from_path_buf(entry.into_path()) else {
+                        // It's incredibly unlikely that a database would have non-utf8 paths
+                        log::debug!("skipping non-utf8 path");
+                        continue;
+                    };
+
+                    if path.extension() != Some("md") {
+                        continue;
+                    }
+
+                    let entry = DbEntry::load(path)?;
+                    // Ignore advisories with the placeholder identifier, just as rustsec does
+                    // TODO: would need to be updated if other databases used their own placeholder
+                    if entry.advisory.advisory.id == "RUSTSEC-0000-0000" {
+                        log::debug!("ignoring advisory with placeholder id '{}'", entry.path);
+                        continue;
+                    }
+
+                    if let Some(existing) = advisories.get(entry.advisory.advisory.id) {
+                        log::warn!(
+                            "ignoring advisory from '{}' with id '{}', an advisory with that id was already loaded from '{}'",
+                            entry.path,
+                            entry.advisory.advisory.id,
+                            existing.path
+                        );
+                    } else {
+                        assert!(
+                            advisories
+                                .insert(entry.advisory.advisory.id.to_owned(), entry)
+                                .is_none(),
+                            "we just inserted over an existing entry even though we just checked for it"
+                        );
+                    }
+                }
+                Err(error) => {
+                    log::warn!("failed to read directory entry: {error}");
+                }
+            }
+        }
+
+        anyhow::ensure!(
+            !advisories.is_empty(),
+            "failed to load any advisories in the database"
+        );
+
+        Ok(Self { advisories })
+    }
+
+    #[inline]
+    pub fn get(&self, id: &str) -> Option<&model::Advisory<'static>> {
+        self.advisories.get(id).map(|adv| &adv.advisory)
+    }
+}
+
+/// A much simpler version of the [`Versions::is_vulnerable`](https://github.com/rustsec/rustsec/blob/cf93efe036c112c5b2737857b991d12c15f43951/rustsec/src/advisory/versions.rs#L22)
+/// method
+///
+/// Rustsec does a bunch of error checking, whereas we assume that an advisory can't enter the database if it has malformed
+/// (ie overlapping) version ranges, though this may need to change if someone uses cargo-deny for a non-rustsec db that
+/// they introduce bad advisories into. It also essentially does a negation to conform with <https://github.com/google/osv.dev>
+/// which is not interesting for this crate
+#[inline]
+pub fn is_affected(versions: &model::Versions, version: &semver::Version) -> bool {
+    find_unaffected_req(versions, version).is_none()
+}
+
+pub fn find_unaffected_req<'v>(
+    versions: &'v model::Versions,
+    version: &semver::Version,
+) -> Option<&'v semver::VersionReq> {
+    if versions.patched.is_empty() && versions.unaffected.is_empty() {
+        return None;
+    }
+
+    fn check<'v>(
+        reqs: &'v [semver::VersionReq],
+        vers: &semver::Version,
+    ) -> Option<&'v semver::VersionReq> {
+        // We can't just blindly use semver's requirement checking here due to https://github.com/dtolnay/semver/issues/172
+        if vers.pre.is_empty() {
+            return reqs.iter().find(|req| req.matches(vers));
+        }
+
+        use std::cmp::Ordering as Or;
+
+        fn cmp_pre(comp: &semver::Comparator, vers: &semver::Version) -> Or {
+            match (comp.pre.is_empty(), vers.pre.is_empty()) {
+                (true, true) => Or::Equal,
+                (false, true) => Or::Greater,
+                (true, false) => Or::Less,
+                _ => {
+                    // preleases are trash, but, at least currently, all of the vulnerabilities have versions that follow
+                    // the basic <some alphabetic id><some integer> though several don't follow the spec and don't separate
+                    // the components with a '.', so we can't rely on that for splitting.
+                    let vs = vers.pre.as_str();
+                    let cs = comp.pre.as_str();
+                    if let Some((vi, ci)) = vs
+                        .find(|c: char| c.is_ascii_digit())
+                        .zip(cs.find(|c: char| c.is_ascii_digit()))
+                        && vi == ci
+                        && vs[..vi] == cs[..ci]
+                    {
+                        let vn = vs[vi..].chars().fold(0u32, |acc, c| {
+                            if c.is_ascii_digit() {
+                                acc * 10 + c as u32 - '0' as u32
+                            } else {
+                                acc
+                            }
+                        });
+
+                        let cn = cs[ci..].chars().fold(0u32, |acc, c| {
+                            if c.is_ascii_digit() {
+                                acc * 10 + c as u32 - '0' as u32
+                            } else {
+                                acc
+                            }
+                        });
+
+                        vn.cmp(&cn)
+                    } else {
+                        vs.cmp(cs)
+                    }
+                }
+            }
+        }
+
+        reqs.iter().find(|req| {
+            // rustsec only allows up to 2 comparators https://github.com/rustsec/rustsec/blob/cf93efe036c112c5b2737857b991d12c15f43951/rustsec/src/osv/unaffected_range.rs#L116-L121
+            fn cmp(comp: &semver::Comparator, vers: &semver::Version) -> bool {
+                use semver::Op;
+
+                let exact = || {
+                    comp.major == vers.major
+                        && comp.minor.is_none_or(|m| m == vers.minor)
+                        && comp.patch.is_none_or(|p| p == vers.patch)
+                        && comp.pre.as_str() == vers.pre.as_str()
+                };
+
+                let greater = || match vers.major.cmp(&comp.major) {
+                    Or::Equal => {
+                        let Some(minor) = comp.minor else {
+                            return false;
+                        };
+
+                        match vers.minor.cmp(&minor) {
+                            Or::Equal => {
+                                let Some(patch) = comp.patch else {
+                                    return vers.patch > 0 || cmp_pre(comp, vers) == Or::Greater;
+                                };
+
+                                vers.patch > patch
+                                    || cmp_pre(comp, vers) == Or::Greater && vers.patch >= patch
+                            }
+                            Or::Greater => true,
+                            Or::Less => false,
+                        }
+                    }
+                    Or::Greater => true,
+                    Or::Less => false,
+                };
+
+                let lesser = || match vers.major.cmp(&comp.major) {
+                    Or::Equal => {
+                        let Some(minor) = comp.minor else {
+                            return false;
+                        };
+
+                        match vers.minor.cmp(&minor) {
+                            Or::Equal => {
+                                let Some(patch) = comp.patch else {
+                                    return cmp_pre(comp, vers) == Or::Less;
+                                };
+
+                                vers.patch < patch
+                                    || cmp_pre(comp, vers) == Or::Less && vers.patch <= patch
+                            }
+                            Or::Greater => false,
+                            Or::Less => true,
+                        }
+                    }
+                    Or::Greater => false,
+                    Or::Less => true,
+                };
+
+                match comp.op {
+                    Op::Greater => greater(),
+                    Op::GreaterEq => greater() || exact(),
+                    Op::Less => lesser(),
+                    Op::LessEq => lesser() || exact(),
+                    Op::Exact => exact(),
+                    Op::Caret => {
+                        if comp.major != vers.major {
+                            return false;
+                        }
+
+                        let Some(minor) = comp.minor else {
+                            return true;
+                        };
+
+                        let Some(patch) = comp.patch else {
+                            if comp.major > 0 {
+                                return vers.minor >= minor;
+                            } else {
+                                return vers.minor == minor;
+                            }
+                        };
+
+                        if comp.major > 0 {
+                            if vers.minor != minor {
+                                return vers.minor > minor;
+                            } else if vers.patch != patch {
+                                return vers.patch > patch;
+                            }
+                        } else if minor > 0 {
+                            if vers.minor != minor {
+                                return false;
+                            } else if vers.patch != patch {
+                                return vers.patch > patch;
+                            }
+                        } else if vers.minor != minor || vers.patch != patch {
+                            return false;
+                        }
+
+                        cmp_pre(comp, vers) != Or::Less
+                    }
+                    Op::Tilde => {
+                        if comp.major != vers.major {
+                            return false;
+                        }
+
+                        if let Some(minor) = comp.minor
+                            && minor != vers.minor
+                        {
+                            return false;
+                        }
+
+                        if let Some(patch) = comp.patch
+                            && patch != vers.patch
+                        {
+                            return patch < vers.patch;
+                        }
+
+                        cmp_pre(comp, vers) != Or::Less
+                    }
+                    _ => unreachable!("fucking non-exhaustive"),
+                }
+            }
+
+            req.comparators.iter().all(|comp| cmp(comp, vers))
+        })
+    }
+
+    check(&versions.patched, version).or_else(|| check(&versions.unaffected, version))
+}
+
+#[cfg(test)]
+mod test {
+    macro_rules! vr {
+        ($vs:expr) => {
+            $vs.iter().map(|s| s.parse().unwrap()).collect()
+        };
+    }
+
+    macro_rules! v {
+        ($vs:expr) => {
+            $vs.iter().map(|s| s.parse::<semver::Version>().unwrap())
+        };
+
+        (s $vs:literal) => {
+            $vs.parse().unwrap()
+        };
+    }
+
+    /// Rustsec considers a prepatch of a version that introduces a vulnerability to not contain that vulnerability
+    #[test]
+    fn matches_rustsec() {
+        // RUSTSEC-2023-0074 - zerocopy
+        let vs = super::model::Versions {
+            patched: vr!([
+                ">= 0.2.9, < 0.3.0",
+                ">= 0.3.2, < 0.4.0",
+                ">= 0.4.1, < 0.5.0",
+                ">= 0.5.2, < 0.6.0",
+                ">= 0.6.6, < 0.7.0",
+                ">= 0.7.31"
+            ]),
+            unaffected: vr!(["< 0.2.2"]),
+        };
+
+        assert!(super::is_affected(&vs, &v!(s "0.6.3-alpha")));
+
+        for version in v!([
+            "0.7.0-alpha",
+            "0.7.0-alpha.1",
+            "0.7.0-alpha.2",
+            "0.7.0-alpha.3",
+            "0.7.0-alpha.4",
+            "0.7.0-alpha.5"
+        ]) {
+            assert!(!super::is_affected(&vs, &version));
+        }
+
+        // trust-dns-server - RUSTSEC-2023-0041
+        let vs = super::model::Versions {
+            patched: vr!(["^0.22.1", ">=0.23.0-alpha.3",]),
+            unaffected: Vec::new(),
+        };
+
+        for version in v!(["0.23.0-alpha.4", "0.23.0-alpha.5"]) {
+            assert!(!super::is_affected(&vs, &version));
+        }
+
+        // tokio-rustls - RUSTSEC-2020-0019
+        let vs = super::model::Versions {
+            patched: vr!([">=0.12.3, <0.13.0", ">=0.13.1"]),
+            unaffected: vr!(["<0.12"]),
+        };
+
+        for version in v!([
+            "0.12.0-alpha.1",
+            "0.12.0-alpha.2",
+            "0.12.0-alpha.3",
+            "0.12.0-alpha.4",
+            "0.12.0-alpha.5",
+            "0.12.0-alpha.6",
+            "0.12.0-alpha.7",
+            "0.12.0-alpha.8",
+        ]) {
+            assert!(!super::is_affected(&vs, &version), "{version}");
+        }
+
+        // actix-http - RUSTSEC-2021-0081
+        let vs = super::model::Versions {
+            patched: vr!(["^2.2.1", ">=3.0.0-beta.9"]),
+            unaffected: Vec::new(),
+        };
+
+        for version in v!([
+            "3.0.0-beta.10",
+            "3.0.0-beta.11",
+            "3.0.0-beta.12",
+            "3.0.0-beta.13",
+            "3.0.0-beta.14",
+            "3.0.0-beta.15",
+            "3.0.0-beta.16",
+            "3.0.0-beta.17",
+            "3.0.0-beta.18",
+            "3.0.0-beta.19",
+        ]) {
+            assert!(!super::is_affected(&vs, &version), "{version}");
+        }
+
+        for version in v!([
+            "2.0.0-alpha.1",
+            "2.0.0-alpha.2",
+            "2.0.0-alpha.3",
+            "2.0.0-alpha.4",
+            "2.0.0-beta.1",
+            "2.0.0-beta.2",
+            "2.0.0-beta.3",
+            "2.0.0-beta.4",
+            // This version doesn't actually exist it is here to ensure that pre-releases are not considered as patched
+            // even if they match the major, minor, and patch versions
+            "2.2.1-alpha.1",
+            "3.0.0-beta.8",
+        ]) {
+            assert!(super::is_affected(&vs, &version), "{version}");
+        }
+
+        // Note there is no case of patched or unaffected versions using `~` in the official rustsec advisory DB, so the
+        // following checks are just based on rustsec's own unit tests
+        fn assert_tilde(
+            vs: Vec<semver::VersionReq>,
+            versions: impl Iterator<Item = semver::Version>,
+        ) {
+            let vs = super::model::Versions {
+                patched: vs,
+                unaffected: Vec::new(),
+            };
+
+            for version in versions {
+                assert!(!super::is_affected(&vs, &version), "{version}");
+            }
+        }
+
+        assert_tilde(vr!(["~1.2.3"]), v!(["1.2.3", "1.2.999"]));
+        assert_tilde(vr!(["~1.2"]), v!(["1.2.0", "1.2.3", "1.2.999"]));
+        assert_tilde(
+            vr!(["~1"]),
+            v!(["1.0.0", "1.2.0", "1.2.3", "1.2.999", "1.3.0", "1.99.999"]),
+        );
     }
 }

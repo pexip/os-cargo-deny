@@ -1,22 +1,139 @@
+use anyhow::Context;
 use cargo_deny::{
-    PathBuf,
+    Path, PathBuf,
     diag::{self, FileId, Files, Severity},
     licenses::LicenseStore,
+    root_cfg::Target,
 };
 
 mod cfg;
 pub use cfg::ValidConfig;
+
+#[macro_export]
+macro_rules! clap_err {
+    ($kind:ident, $cmd:expr) => {
+        clap::Error::new(clap::error::ErrorKind::$kind).with_cmd($cmd)
+    };
+}
+
+#[macro_export]
+macro_rules! clap_err_invalid_value {
+    ($v:expr, $arg:expr, $cmd:expr) => {{
+        let mut err = clap::Error::new(clap::error::ErrorKind::ValueValidation).with_cmd($cmd);
+        err.insert(
+            clap::error::ContextKind::InvalidValue,
+            clap::error::ContextValue::String($v.to_owned()),
+        );
+        err.insert(
+            clap::error::ContextKind::InvalidArg,
+            clap::error::ContextValue::String(
+                $arg.map(ToString::to_string)
+                    .unwrap_or_else(|| "...".to_owned()),
+            ),
+        );
+        err
+    }};
+}
+
+#[macro_export]
+macro_rules! enum_args {
+    ($kind:ty : $parser:ident => { $($name:literal => $value:ident),*$(,)? }) => {
+        #[derive(Clone)]
+        struct $parser;
+
+        impl clap::builder::TypedValueParser for $parser {
+            type Value = $kind;
+
+            fn parse_ref(
+                &self,
+                cmd: &clap::Command,
+                arg: Option<&clap::Arg>,
+                value: &std::ffi::OsStr,
+            ) -> Result<Self::Value, clap::Error> {
+                let Some(v) = value.to_str() else {
+                    return Err($crate::clap_err!(InvalidUtf8, cmd));
+                };
+
+                let v = match v {
+                    $(
+                        $name => <$kind>::$value,
+                    )*
+                    _ => return Err($crate::clap_err_invalid_value!(v, arg, cmd))
+                };
+
+                Ok(v)
+            }
+
+            fn possible_values(
+                &self,
+            ) -> Option<Box<dyn Iterator<Item = clap::builder::PossibleValue> + '_>> {
+                Some(Box::new(
+                    [
+                        $(
+                            clap::builder::PossibleValue::new($name),
+                        )*
+                    ]
+                    .into_iter(),
+                ))
+            }
+        }
+    };
+}
+
+#[derive(Clone)]
+pub struct PathParser;
+
+impl clap::builder::TypedValueParser for PathParser {
+    type Value = crate::PathBuf;
+
+    fn parse_ref(
+        &self,
+        cmd: &clap::Command,
+        _arg: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<Self::Value, clap::Error> {
+        let Some(p) = value.to_str() else {
+            return Err(clap_err!(InvalidUtf8, cmd));
+        };
+
+        Ok(crate::PathBuf::from(p.to_owned()))
+    }
+}
 
 pub(crate) fn load_license_store() -> Result<LicenseStore, anyhow::Error> {
     log::debug!("loading license store...");
     LicenseStore::from_cache()
 }
 
+pub(crate) fn current_dir_utf8() -> anyhow::Result<PathBuf> {
+    let current_dir =
+        std::env::current_dir().context("could not access current working directory")?;
+
+    let current_dir = PathBuf::from_path_buf(current_dir)
+        .map_err(|pb| anyhow::anyhow!("path '{}' is not utf-8", pb.display()))
+        .context("could not access current working directory")?;
+
+    Ok(current_dir)
+}
+
+fn single_target(cmd_targets: &[&'static str], cfg_targets: &[Target], f: impl FnOnce(&str)) {
+    if let Some(targ) = cmd_targets.first().filter(|_| cmd_targets.len() == 1) {
+        f(targ);
+    } else if let Some(targ) = cfg_targets
+        .first()
+        .filter(|_| cfg_targets.len() == 1 && cmd_targets.is_empty())
+    {
+        f(&targ.filter.value.to_string());
+    }
+}
+
 pub struct KrateContext {
     pub manifest_path: PathBuf,
+    pub config_path: Option<PathBuf>,
+    pub metadata_path: Option<PathBuf>,
     pub workspace: bool,
     pub exclude: Vec<String>,
-    pub targets: Vec<String>,
+    pub targets: Vec<&'static str>,
     pub no_default_features: bool,
     pub all_features: bool,
     pub features: Vec<String>,
@@ -28,41 +145,51 @@ pub struct KrateContext {
 }
 
 impl KrateContext {
-    pub fn get_config_path(&self, config_path: Option<PathBuf>) -> Option<PathBuf> {
-        if let Some(cp) = config_path {
-            if cp.is_absolute() {
-                Some(cp)
-            } else {
-                Some(self.manifest_path.parent().unwrap().join(cp))
-            }
+    pub fn get_config_path(&self) -> anyhow::Result<Option<PathBuf>> {
+        if let Some(config_path) = &self.config_path {
+            let current_dir = current_dir_utf8()?;
+            Ok(Some(Self::resolve_config_path(&current_dir, config_path)))
         } else {
-            let mut p = self.manifest_path.parent();
+            Ok(Self::default_config_path(&self.manifest_path))
+        }
+    }
 
-            while let Some(parent) = p {
-                let mut config_path = parent.join("deny.toml");
+    fn resolve_config_path(current_dir: &Path, config_path: &Path) -> PathBuf {
+        if config_path.is_absolute() {
+            config_path.to_owned()
+        } else {
+            current_dir.join(config_path)
+        }
+    }
 
-                if config_path.exists() {
-                    return Some(config_path);
-                }
+    fn default_config_path(manifest_path: &Path) -> Option<PathBuf> {
+        let mut p = manifest_path.parent();
 
-                config_path.pop();
-                config_path.push(".deny.toml");
+        while let Some(parent) = p {
+            let mut config_path = parent.join("deny.toml");
 
-                if config_path.exists() {
-                    return Some(config_path);
-                }
-
-                config_path.pop();
-                config_path.push(".cargo/deny.toml");
-                if config_path.exists() {
-                    return Some(config_path);
-                }
-
-                p = parent.parent();
+            if config_path.exists() {
+                return Some(config_path);
             }
 
-            None
+            config_path.pop();
+            config_path.push(".deny.toml");
+
+            if config_path.exists() {
+                return Some(config_path);
+            }
+
+            config_path.pop();
+            config_path.push(".cargo/deny.toml");
+
+            if config_path.exists() {
+                return Some(config_path);
+            }
+
+            p = parent.parent();
         }
+
+        None
     }
 
     pub fn get_local_exceptions_path(&self) -> Option<PathBuf> {
@@ -95,40 +222,50 @@ impl KrateContext {
     }
 
     #[inline]
-    pub fn fetch_krates(&self) -> anyhow::Result<()> {
-        fetch(MetadataOptions {
-            no_default_features: false,
-            all_features: false,
-            features: Vec::new(),
-            manifest_path: self.manifest_path.clone(),
-            frozen: self.frozen,
-            locked: self.locked,
-            offline: self.offline,
-        })
+    pub fn fetch_krates(&self, cfg_targets: &[Target]) -> anyhow::Result<()> {
+        fetch(
+            MetadataOptions {
+                no_default_features: false,
+                all_features: false,
+                features: Vec::new(),
+                manifest_path: self.manifest_path.clone(),
+                frozen: self.frozen,
+                locked: self.locked,
+                offline: self.offline,
+            },
+            &self.targets,
+            cfg_targets,
+        )
     }
 
     pub fn gather_krates(
         self,
-        metadata: Option<krates::cm::Metadata>,
-        cfg_targets: Vec<cargo_deny::root_cfg::Target>,
+        cfg_targets: Vec<Target>,
         cfg_excludes: Vec<String>,
     ) -> Result<cargo_deny::Krates, anyhow::Error> {
         log::info!("gathering crates for {}", self.manifest_path);
         let start = std::time::Instant::now();
 
         log::debug!("gathering crate metadata");
-        let metadata = if let Some(md) = metadata {
-            md
+        let metadata = if let Some(md) = self.metadata_path {
+            let data = std::fs::read_to_string(&md)
+                .with_context(|| format!("failed to read metadata JSON from {md}"))?;
+            serde_json::from_str(&data)
+                .with_context(|| format!("failed to deserialize metadata JSON from {md}"))?
         } else {
-            Self::get_metadata(MetadataOptions {
-                no_default_features: self.no_default_features,
-                all_features: self.all_features,
-                features: self.features,
-                manifest_path: self.manifest_path,
-                frozen: self.frozen,
-                locked: self.locked,
-                offline: self.offline,
-            })?
+            Self::get_metadata(
+                MetadataOptions {
+                    no_default_features: self.no_default_features,
+                    all_features: self.all_features,
+                    features: self.features,
+                    manifest_path: self.manifest_path,
+                    frozen: self.frozen,
+                    locked: self.locked,
+                    offline: self.offline,
+                },
+                &self.targets,
+                &cfg_targets,
+            )?
         };
         log::debug!(
             "gathered crate metadata in {}ms",
@@ -177,8 +314,8 @@ impl KrateContext {
         }
         if self.exclude_unpublished {
             gb.include_workspace_crates(metadata.workspace_packages().iter().filter_map(
-                |package| match package.publish {
-                    Some(ref registries) if registries.is_empty() => None,
+                |package| match &package.publish {
+                    Some(registries) if registries.is_empty() => None,
                     _ => Some(package.manifest_path.as_std_path()),
                 },
             ));
@@ -218,7 +355,11 @@ impl KrateContext {
         Ok(graph?)
     }
 
-    fn get_metadata(opts: MetadataOptions) -> Result<krates::cm::Metadata, anyhow::Error> {
+    fn get_metadata(
+        opts: MetadataOptions,
+        targets: &[&'static str],
+        cfg_targets: &[Target],
+    ) -> Result<krates::cm::Metadata, anyhow::Error> {
         let mut mdc = krates::Cmd::new();
 
         if opts.no_default_features {
@@ -237,6 +378,10 @@ impl KrateContext {
                 offline: opts.offline,
             });
 
+        single_target(targets, cfg_targets, |target| {
+            mdc.other_options(["--filter-platform".to_owned(), target.to_owned()]);
+        });
+
         let mdc: krates::cm::MetadataCommand = mdc.into();
         Ok(mdc.exec()?)
     }
@@ -252,7 +397,11 @@ struct MetadataOptions {
     offline: bool,
 }
 
-fn fetch(opts: MetadataOptions) -> anyhow::Result<()> {
+fn fetch(
+    opts: MetadataOptions,
+    cmd_targets: &[&'static str],
+    cfg_targets: &[cargo_deny::root_cfg::Target],
+) -> anyhow::Result<()> {
     use anyhow::Context as _;
     let mut cargo =
         std::process::Command::new(std::env::var("CARGO").unwrap_or_else(|_ve| "cargo".to_owned()));
@@ -271,6 +420,11 @@ fn fetch(opts: MetadataOptions) -> anyhow::Result<()> {
     if opts.offline {
         cargo.arg("--offline");
     }
+
+    single_target(cmd_targets, cfg_targets, |target| {
+        cargo.arg("--target");
+        cargo.arg(target);
+    });
 
     cargo.stderr(std::process::Stdio::piped());
     let output = cargo.output().context("failed to run cargo")?;
@@ -543,5 +697,51 @@ impl<'a> DiagPrinter<'a> {
     #[inline]
     pub fn lock(&'a self) -> OutputLock<'a, 'a> {
         self.which.lock(self.max_severity)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[inline]
+    fn temp_dir() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
+    }
+
+    #[test]
+    fn test_resolve_config_path() {
+        let temp_dir = temp_dir();
+
+        let current_dir = PathBuf::from_path_buf(temp_dir.path().to_path_buf()).unwrap();
+        std::fs::File::create(current_dir.join("deny.toml")).unwrap();
+
+        let expected = current_dir.join("deny.toml");
+
+        let abs_path = current_dir.join("deny.toml");
+        let actual = KrateContext::resolve_config_path(&current_dir, &abs_path);
+        assert_eq!(actual, abs_path);
+
+        let rel_path = Path::new("./deny.toml");
+        let actual = KrateContext::resolve_config_path(&current_dir, rel_path);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_default_config_path() {
+        let temp_dir = temp_dir();
+
+        let current_dir = PathBuf::from_path_buf(temp_dir.path().to_path_buf()).unwrap();
+        std::fs::File::create(current_dir.join("Cargo.toml")).unwrap();
+        let manifest_path = current_dir.join("Cargo.toml");
+
+        let actual = KrateContext::default_config_path(&manifest_path);
+        let expected = None;
+        assert_eq!(actual, expected);
+
+        std::fs::File::create(current_dir.join("deny.toml")).unwrap();
+        let actual = KrateContext::default_config_path(&manifest_path);
+        let expected = Some(current_dir.join("deny.toml"));
+        assert_eq!(actual, expected);
     }
 }

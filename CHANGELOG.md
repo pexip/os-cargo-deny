@@ -8,6 +8,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- next-header -->
 ## [Unreleased] - ReleaseDate
+## [0.20.2] - 2026-07-09
+### Fixed
+- [PR#884](https://github.com/EmbarkStudios/cargo-deny/pull/884) fixed snapshot filenames on Windows which caused the release binary publish to fail...again.
+
+## [0.20.1] - 2026-07-09
+### Fixed
+- [PR#883](https://github.com/EmbarkStudios/cargo-deny/pull/883) fixed snapshot filenames on Windows which caused the release binary publish to fail.
+
+## [0.20.0] - 2026-07-09
+### Changed
+- [PR#881](https://github.com/EmbarkStudios/cargo-deny/pull/881) refactored the CLI, moving some duplicated options/flags into the root and removing several deprecated options/flags/values. See the PR for a full list of changes.
+
+### Added
+- [PR#879](https://github.com/EmbarkStudios/cargo-deny/pull/879) resolved [#873](https://github.com/EmbarkStudios/cargo-deny/issues/873) by adding a new [`bans.std-replacements`](https://embarkstudios.github.io/cargo-deny/checks/bans/cfg.html#the-std-replacements-field-optional) lint which checks the graph for crates.io sourced crates that have been partially or fully replaced in `std` and/or `core`.
+
+### Fixed
+- [PR#880](https://github.com/EmbarkStudios/cargo-deny/pull/880) resolved [#765](https://github.com/EmbarkStudios/cargo-deny/issues/765) by respecting non-default build script paths in manifests.
+- [PR#881](https://github.com/EmbarkStudios/cargo-deny/pull/881) resolved [#874](https://github.com/EmbarkStudios/cargo-deny/issues/874) by cleaning up the CLI, deduplicating some options/flags that caused bug in the `list` subcommand.
+
+## [0.19.9] - 2026-06-15
+### Added
+- [PR#866](https://github.com/EmbarkStudios/cargo-deny/pull/866) added [`sources.unused-allowed-org`](https://embarkstudios.github.io/cargo-deny/checks/sources/cfg.html#the-unused-allowed-org-field-optional)
+
+### Fixed
+- [PR#870](https://github.com/EmbarkStudios/cargo-deny/pull/870) resolved [#868](https://github.com/EmbarkStudios/cargo-deny/issues/868) by spawning scoped threads directly, allowing forward progress even on severely constrained thread pool counts.
+- [PR#871](https://github.com/EmbarkStudios/cargo-deny/pull/871) resolved [#869](https://github.com/EmbarkStudios/cargo-deny/issues/869) by ignoring wildcards on crates that depend on themselves.
+
+## [0.19.8] - 2026-05-28
+### Fixed
+- [PR#864](https://github.com/EmbarkStudios/cargo-deny/pull/864) fixed matching of `^` and `~` with on prerelease versions for when checking if a crate is affected by an advisory. As of the time of the PR, this literally affected none of published versions of any crate with an advisory, but this just ensures such a case will be handled in the future.
+
+## [0.19.7] - 2026-05-22
+### Changed
+- [PR#860](https://github.com/EmbarkStudios/cargo-deny/pull/860) updated crates, resolving [krates#111](https://github.com/EmbarkStudios/krates/issues/111).
+
+## [0.19.6] - 2026-05-11
+### Fixed
+- [PR#854](https://github.com/EmbarkStudios/cargo-deny/pull/857) resolved [#854](https://github.com/EmbarkStudios/cargo-deny/issues/854) by removing environment variables that affect repo paths before cloning or fetching the advisory database.
+
+## [0.19.5] - 2026-05-09
+### Fixed
+- [PR#857](https://github.com/EmbarkStudios/cargo-deny/pull/857) fixed a segfault reported in [#855](https://github.com/EmbarkStudios/cargo-deny/issues/855).
+
+## [0.19.4] - 2026-04-15
+### Fixed
+- [PR#847](https://github.com/EmbarkStudios/cargo-deny/pull/847) and [PR#848](https://github.com/EmbarkStudios/cargo-deny/pull/848) resolved [#846](https://github.com/EmbarkStudios/cargo-deny/issues/846), which was an advisory parsing bug that only affected Windows.
+
+## [0.19.3] - 2026-04-15
+### Fixed
+- [PR#847](https://github.com/EmbarkStudios/cargo-deny/pull/847) resolved [#846](https://github.com/EmbarkStudios/cargo-deny/issues/846), which only affected Windows.
+
+## [0.19.2] - 2026-04-14
+### Fixed
+- [PR#845](https://github.com/EmbarkStudios/cargo-deny/pull/845) fixed structural issues with SARIF output, resolving [#818](https://github.com/EmbarkStudios/cargo-deny/issues/818). Thanks [@KyleChamberlin](https://github.com/KyleChamberlin)!
+
+## [0.19.1] - 2026-04-10
+### Fixed
+- [PR#833](https://github.com/EmbarkStudios/cargo-deny/pull/833) fixed an issue where the maximum advisory database staleness was over 14 years instead of the intended 90 days.
+- [PR#839](https://github.com/EmbarkStudios/cargo-deny/pull/839) fixed an issue where unsound advisories would appear for transitive dependencies despite requesting them only for workspace dependencies, resolving [#829](https://github.com/EmbarkStudios/cargo-deny/issues/829).
+- [PR#840](https://github.com/EmbarkStudios/cargo-deny/pull/840) resolved [#797](https://github.com/EmbarkStudios/cargo-deny/issues/797) by passing `--filter-platform` when collecting cargo metadata if only a single target was requested either in the config or via the command line.
+- [PR#841](https://github.com/EmbarkStudios/cargo-deny/pull/841) fixed an issue where `--frozen` would not disable fetching of the advisory DB, resolving [#759](https://github.com/EmbarkStudios/cargo-deny/issues/759).
+- [PR#842](https://github.com/EmbarkStudios/cargo-deny/pull/842) and [PR#844](https://github.com/EmbarkStudios/cargo-deny/pull/844) updated crates. Notably `krates` was updated to resolve two issues with crates being pruned from the graph used when running checks. Resolving these two issues may mean that updating cargo-deny may highlight issues that were previously hidden.
+  - [EmbarkStudios/krates#106](https://github.com/EmbarkStudios/krates/issues/106) would fail to pull in crates brought in via a feature if that crate had its `lib` target renamed by the package author.
+  - [EmbarkStudios/krates#109](https://github.com/EmbarkStudios/krates/issues/109) would fail to bring in optional dependencies if they were brought in by a weak feature in a crate _also_ brought in by a weak feature.
+
+### Changed
+- [PR#830](https://github.com/EmbarkStudios/cargo-deny/pull/830) removed `gix` in favor of shelling out to `git`. This massively improves build times and eases maintenance as `gix` bumps minor versions quite frequently. If cargo-deny is used in an environment that for some reason allows internet access but doesn't have `git` available, the advisory database would need to be updated before calling cargo-deny.
+- [PR#838](https://github.com/EmbarkStudios/cargo-deny/pull/838) removed `rustsec` in favor of manually implemented advisory parsing and checking, with a nightly cron job that checks that the implementation exactly matches rustsec on the official rustsec advisory db.
+
+## [0.19.0] - 2026-01-08
+### Changed
+- [PR#802](https://github.com/EmbarkStudios/cargo-deny/pull/802) made relative paths passed to `--config` be resolved relative to the current working directory (rather than the resolved manifest path's directory).
+- [PR#825](https://github.com/EmbarkStudios/cargo-deny/pull/825) updated `gix`, `reqwest`, and `tame-index` to newer versions. The `reqwest` 0.13 changes means it is no longer possible to choose the source of root certificates for `gix`, so that decision is now left to `rustls-platform-verifier`. The `native-certs` feature has thus been removed, and `cargo-deny` no longer defaults to using `webpki-roots`.
+
+### Fixed
+- [PR#802](https://github.com/EmbarkStudios/cargo-deny/pull/802) fixed path handling of paths passed to `--config`, resolving [#748](https://github.com/EmbarkStudios/krates/issues/748).
+- [PR#819](https://github.com/EmbarkStudios/cargo-deny/pull/819) added locations to all SARIF results since that's mandatory for valid SARIF.
+- [PR#821](https://github.com/EmbarkStudios/cargo-deny/pull/821) fixed compilation on an Alpine host.
+
+### Added
+- [PR#795](https://github.com/EmbarkStudios/cargo-deny/pull/795) added `[bans.allow-workspace]` to allow workspace crates while denying all external crates.
+- [PR#800](https://github.com/EmbarkStudios/cargo-deny/pull/800) added `[licenses.include-build]` to toggle whether build dependencies are included in the license check.
+- [PR#823](https://github.com/EmbarkStudios/cargo-deny/pull/823) added `[advisories.unused-ignored-advisory]` to disable the warning when an advisory is ignored but not encountered in the crate graph.
+- [PR#826](https://github.com/EmbarkStudios/cargo-deny/pull/826) added `[advisories.unsound]` to determine which crates can show `unsound` advisories, similarly to the `unmaintained` field. Defaults to `workspace` crates, ignoring `unsound` advisories for transitive dependencies, resolving [#824](https://github.com/EmbarkStudios/cargo-deny/issues/824).
+
 ## [0.18.9] - 2025-12-08
 ### Fixed
 - [PR#817](https://github.com/EmbarkStudios/cargo-deny/pull/817) resolved [#816](https://github.com/EmbarkStudios/cargo-deny/issues/816) by making most license integration tests just return success if I or CI am not the one running them.
@@ -756,7 +841,20 @@ Now each license has to be explicitly approved, either by listing them in `licen
 - Initial implementation release
 
 <!-- next-url -->
-[Unreleased]: https://github.com/EmbarkStudios/cargo-deny/compare/0.18.9...HEAD
+[Unreleased]: https://github.com/EmbarkStudios/cargo-deny/compare/0.20.2...HEAD
+[0.20.2]: https://github.com/EmbarkStudios/cargo-deny/compare/0.20.1...0.20.2
+[0.20.1]: https://github.com/EmbarkStudios/cargo-deny/compare/0.20.0...0.20.1
+[0.20.0]: https://github.com/EmbarkStudios/cargo-deny/compare/0.19.9...0.20.0
+[0.19.9]: https://github.com/EmbarkStudios/cargo-deny/compare/0.19.8...0.19.9
+[0.19.8]: https://github.com/EmbarkStudios/cargo-deny/compare/0.19.7...0.19.8
+[0.19.7]: https://github.com/EmbarkStudios/cargo-deny/compare/0.19.6...0.19.7
+[0.19.6]: https://github.com/EmbarkStudios/cargo-deny/compare/0.19.5...0.19.6
+[0.19.5]: https://github.com/EmbarkStudios/cargo-deny/compare/0.19.4...0.19.5
+[0.19.4]: https://github.com/EmbarkStudios/cargo-deny/compare/0.19.3...0.19.4
+[0.19.3]: https://github.com/EmbarkStudios/cargo-deny/compare/0.19.2...0.19.3
+[0.19.2]: https://github.com/EmbarkStudios/cargo-deny/compare/0.19.1...0.19.2
+[0.19.1]: https://github.com/EmbarkStudios/cargo-deny/compare/0.19.0...0.19.1
+[0.19.0]: https://github.com/EmbarkStudios/cargo-deny/compare/0.18.9...0.19.0
 [0.18.9]: https://github.com/EmbarkStudios/cargo-deny/compare/0.18.8...0.18.9
 [0.18.8]: https://github.com/EmbarkStudios/cargo-deny/compare/0.18.7...0.18.8
 [0.18.7]: https://github.com/EmbarkStudios/cargo-deny/compare/0.18.6...0.18.7

@@ -56,15 +56,15 @@ pub fn check(ctx: crate::CheckCtx<'_, ValidConfig>, sink: impl Into<ErrorSink>) 
             (ctx.cfg.unknown_registry, "registry")
         } else if let Some(spec) = source.git_spec() {
             // Ensure the git source has at least the minimum specification
-            if let Some((min, cfg_coord)) = &min_git_spec {
-                if spec < *min {
-                    pack.push(diags::BelowMinimumRequiredSpec {
-                        src_label: sl.get_or_insert_with(label),
-                        min_spec: *min,
-                        actual_spec: spec,
-                        min_spec_cfg: cfg_coord.clone(),
-                    });
-                }
+            if let Some((min, cfg_coord)) = &min_git_spec
+                && spec < *min
+            {
+                pack.push(diags::BelowMinimumRequiredSpec {
+                    src_label: sl.get_or_insert_with(label),
+                    min_spec: *min,
+                    actual_spec: spec,
+                    min_spec_cfg: cfg_coord.clone(),
+                });
             }
 
             (ctx.cfg.unknown_git, "git")
@@ -151,7 +151,7 @@ pub fn check(ctx: crate::CheckCtx<'_, ValidConfig>, sink: impl Into<ErrorSink>) 
 
     for src in source_hits
         .into_iter()
-        .zip(ctx.cfg.allowed_sources.into_iter())
+        .zip(ctx.cfg.allowed_sources)
         .filter_map(|(hit, src)| if !hit { Some(src) } else { None })
     {
         // If someone in is in a situation that they want to disallow crates
@@ -171,10 +171,11 @@ pub fn check(ctx: crate::CheckCtx<'_, ValidConfig>, sink: impl Into<ErrorSink>) 
 
     for (org_type, orgs) in org_hits
         .into_iter()
-        .zip(ctx.cfg.allowed_orgs.into_iter())
+        .zip(ctx.cfg.allowed_orgs)
         .filter_map(|(hit, src)| if !hit { Some(src) } else { None })
     {
         pack.push(diags::UnmatchedAllowOrg {
+            severity: ctx.cfg.unused_allowed_org.into(),
             allow_org_cfg: CfgCoord {
                 span: orgs.span,
                 file: ctx.cfg.file_id,

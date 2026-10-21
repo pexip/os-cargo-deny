@@ -281,21 +281,17 @@ pub fn diag_to_json(
         for gn in diag.graph_nodes {
             if let Ok(graph) =
                 grapher.build_graph(&gn, if diag.with_features { usize::MAX } else { 0 })
+                && let Ok(sgraph) = serde_json::value::to_value(graph)
             {
-                if let Ok(sgraph) = serde_json::value::to_value(graph) {
-                    graphs.push(sgraph);
-                }
+                graphs.push(sgraph);
             }
         }
 
         fields.insert("graphs".to_owned(), serde_json::Value::Array(graphs));
     }
 
-    if let Some(extra) = diag.extra {
-        let key = extra.key();
-        if let Ok(val) = serde_json::to_value(extra) {
-            fields.insert(key.into(), val);
-        }
+    if let Some(super::SerializedAdvisory::Json(advisory)) = diag.advisory {
+        fields.insert("advisory".to_owned(), advisory);
     }
 
     to_print

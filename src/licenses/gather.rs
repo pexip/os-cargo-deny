@@ -67,8 +67,7 @@ fn get_file_source(root: &Path, path: PathBuf) -> PackFile {
             }
         };
 
-        let mut s =
-            String::with_capacity(file.metadata().map(|m| m.len() as usize + 1).unwrap_or(0));
+        let mut s = String::with_capacity(file.metadata().map_or(0, |m| m.len() as usize + 1));
 
         let mut br = std::io::BufReader::new(file);
         let mut min = 0;
@@ -150,10 +149,10 @@ impl LicensePack {
 
         // Add the explicitly specified license if it wasn't
         // already found in the root directory
-        if let Some(lf) = &krate.license_file {
-            if !lic_paths.iter().any(|l| l.ends_with(lf)) {
-                lic_paths.push(lf.clone());
-            }
+        if let Some(lf) = &krate.license_file
+            && !lic_paths.iter().any(|l| l.ends_with(lf))
+        {
+            lic_paths.push(lf.clone());
         }
 
         let mut license_files: Vec<_> = lic_paths
@@ -482,7 +481,7 @@ impl Gatherer {
         self,
         krates: &'k crate::Krates,
         files: &mut Files,
-        cfg: Option<&ValidConfig>,
+        cfg: &ValidConfig,
     ) -> Summary<'k> {
         let mut summary = Summary::new(self.store);
 
@@ -495,11 +494,31 @@ impl Gatherer {
 
         let files_lock = std::sync::Arc::new(parking_lot::RwLock::new(files));
 
-        // Most users will not care about licenses for dev dependencies
-        let krates = if cfg.is_some_and(|cfg| cfg.include_dev) {
-            krates.krates().collect()
-        } else {
-            krates.krates_filtered(krates::DepKind::Dev)
+        // Determine which dependency kinds to include in license checking.
+        // By default dev-dependencies are excluded (include_dev = false),
+        // while build-dependencies are included (include_build = true).
+        let krates = match (cfg.include_dev, cfg.include_build) {
+            (true, true) => krates.krates().collect(),
+            (true, false) => krates.krates_filtered(krates::DepKind::Build),
+            (false, true) => krates.krates_filtered(krates::DepKind::Dev),
+            (false, false) => {
+                // Exclude crates that are only reachable via dev _or_ build
+                // dependency edges. Compute the intersection of the sets that
+                // remain when dev-only and build-only crates are removed.
+                let filtered_dev = krates.krates_filtered(krates::DepKind::Dev);
+                let filtered_build = krates.krates_filtered(krates::DepKind::Build);
+
+                // Both filtered lists are sorted by id; compute intersection by
+                // comparing ids. We'll build a vector of crates present in both.
+                let mut build_ids: Vec<_> = filtered_build.iter().map(|k| k.id.clone()).collect();
+                // Ensure sorted for binary_search (should already be sorted, but be safe)
+                build_ids.sort();
+
+                filtered_dev
+                    .into_iter()
+                    .filter(|k| build_ids.binary_search(&k.id).is_ok())
+                    .collect()
+            }
         };
 
         let lic_rx = regex::Regex::new(LICENSE_RX).expect("failed to compile regex");
@@ -572,32 +591,32 @@ impl Gatherer {
                 let mut license_pack = None;
 
                 // 1
-                if let Some(cfg) = cfg {
-                    for clarification in iter_clarifications(&cfg.clarifications, krate) {
-                        let lp = if let Some(lp) = &mut license_pack {
-                            lp
-                        } else {
-                            license_pack = Some(LicensePack::read(krate));
-                            license_pack.as_mut().unwrap()
-                        };
+                for clarification in iter_clarifications(&cfg.clarifications, krate) {
+                    let lp = if let Some(lp) = &mut license_pack {
+                        lp
+                    } else {
+                        license_pack = Some(LicensePack::read(krate));
+                        license_pack.as_mut().unwrap()
+                    };
 
-                        // Check to see if the clarification provided exactly matches
-                        // the set of detected licenses, if they do, we use the clarification's
-                        // license expression as the license requirements for this crate
-                        let clarifications_match = clarification.license_files.iter().all(|clf| {
+                    // Check to see if the clarification provided exactly matches
+                    // the set of detected licenses, if they do, we use the clarification's
+                    // license expression as the license requirements for this crate
+                    let clarifications_match =
+                        clarification.license_files.iter().all(|clf| {
                             match lp.insert_clarification(clf) {
                                 Ok(_) => true,
                                 Err(reason) => {
-                                    if let MismatchReason::Error(err) = reason {
-                                        if err.kind() == std::io::ErrorKind::NotFound {
-                                            diags.push(
-                                                super::diags::MissingClarificationFile {
-                                                    expected: &clf.path,
-                                                    cfg_file_id: cfg.file_id,
-                                                }
-                                                .into(),
-                                            );
-                                        }
+                                    if let MismatchReason::Error(err) = reason
+                                        && err.kind() == std::io::ErrorKind::NotFound
+                                    {
+                                        diags.push(
+                                            super::diags::MissingClarificationFile {
+                                                expected: &clf.path,
+                                                cfg_file_id: cfg.file_id,
+                                            }
+                                            .into(),
+                                        );
                                     }
 
                                     false
@@ -605,21 +624,20 @@ impl Gatherer {
                             }
                         });
 
-                        if clarifications_match {
-                            return KrateLicense {
-                                krate,
-                                lic_info: LicenseInfo::SpdxExpression {
-                                    expr: clarification.expression.clone(),
-                                    nfo: LicenseExprInfo {
-                                        file_id: cfg.file_id,
-                                        offset: clarification.expr_offset,
-                                        source: LicenseExprSource::UserOverride,
-                                    },
+                    if clarifications_match {
+                        return KrateLicense {
+                            krate,
+                            lic_info: LicenseInfo::SpdxExpression {
+                                expr: clarification.expression.clone(),
+                                nfo: LicenseExprInfo {
+                                    file_id: cfg.file_id,
+                                    offset: clarification.expr_offset,
+                                    source: LicenseExprSource::UserOverride,
                                 },
-                                diags,
-                                notes: Vec::new(),
-                            };
-                        }
+                            },
+                            diags,
+                            notes: Vec::new(),
+                        };
                     }
                 }
 
@@ -692,10 +710,10 @@ impl Gatherer {
                             }
                             Err(error) => {
                                 // Don't give multiple diagnostics for the same parse error
-                                if let Some(es) = &error_span {
-                                    if es == &error.span {
-                                        break;
-                                    }
+                                if let Some(es) = &error_span
+                                    && es == &error.span
+                                {
+                                    break;
                                 }
 
                                 error_span = Some(error.span.clone());
@@ -714,20 +732,17 @@ impl Gatherer {
                             }
                         }
                     }
-                } else if krate.license.as_ref().is_some_and(|l| l.is_empty()) {
-                    if let Some((id, loc)) =
+                } else if krate.license.as_ref().is_some_and(|l| l.is_empty())
+                    && let Some((id, loc)) =
                         Self::get_license_span(&lic_rx, &files_lock, &krate.manifest_path)
-                    {
-                        diags.push(
-                            diags::EmptyLicenseField {
-                                file_id: id,
-                                span: loc,
-                            }
-                            .into(),
-                        );
-                    } else {
-                        diags.push(diags::NoLicenseField(krate).into());
-                    }
+                {
+                    diags.push(
+                        diags::EmptyLicenseField {
+                            file_id: id,
+                            span: loc,
+                        }
+                        .into(),
+                    );
                 } else {
                     diags.push(diags::NoLicenseField(krate).into());
                 }
@@ -933,13 +948,13 @@ mod test {
 
         let expected_hash = 0xbd0e_ed23;
 
-        if let super::PackFileData::Good(lf) = pf.data {
-            if lf.hash != expected_hash {
-                eprintln!("hash: {expected_hash:#x} != {:#x}", lf.hash);
+        if let super::PackFileData::Good(lf) = pf.data
+            && lf.hash != expected_hash
+        {
+            eprintln!("hash: {expected_hash:#x} != {:#x}", lf.hash);
 
-                for (i, (a, b)) in lf.content.chars().zip(expected.chars()).enumerate() {
-                    assert_eq!(a, b, "character @ {i}");
-                }
+            for (i, (a, b)) in lf.content.chars().zip(expected.chars()).enumerate() {
+                assert_eq!(a, b, "character @ {i}");
             }
         }
     }

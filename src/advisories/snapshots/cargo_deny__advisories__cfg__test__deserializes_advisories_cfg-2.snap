@@ -15,6 +15,7 @@ expression: validated
     }
   ],
   "unmaintained": "Workspace",
+  "unsound": "Workspace",
   "ignore_yanked": [
     {
       "spec": {
@@ -36,8 +37,9 @@ expression: validated
   "yanked": "warn",
   "git_fetch_with_cli": false,
   "disable_yank_checking": false,
-  "maximum_db_staleness": [
-    466560000,
-    0
-  ]
+  "maximum_db_staleness": {
+    "secs": 7776000,
+    "nanos": 0
+  },
+  "unused_ignored_advisory": "warn"
 }
