@@ -2,6 +2,8 @@ cargo-deny (0.20.2+pexip25u1) pexip-trixie; urgency=medium
 
   * New upstream release
   * Make Rust 1.85-compatible
+  * Fix ${shlibs:Depends} typo so library dependencies are declared
+  * Recommend git, used to fetch advisory databases
 
  -- Samuel Collins <samuel.collins@pexip.com>  Wed, 21 Oct 2026 10:33:36 +0000
 

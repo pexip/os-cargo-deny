@@ -11,6 +11,7 @@ XS-Upstream-Git: https://github.com/EmbarkStudios/cargo-deny
 Package: cargo-deny
 Architecture: any
 Depends: ${misc:Depends},
- ${shlib:Depends},
+ ${shlibs:Depends},
+Recommends: git,
 Description: Cargo plugin to limit dependencies
  Cargo plugin which allows you to limit your dependencies.
